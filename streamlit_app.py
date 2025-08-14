@@ -1,401 +1,493 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from typing import Dict, Tuple, Optional, List
+from pathlib import Path
+from typing import Dict, Optional, Tuple, List, Union
 
-st.set_page_config(page_title="Dengue Bed Allocation", page_icon="🏥", layout="wide")
+# -----------------------------
+# Page config
+# -----------------------------
+st.set_page_config(page_title="Dengue Patient Allocation System", page_icon="🏥", layout="wide")
+st.title("🏥 Dengue Patient Allocation System")
 
-st.title("🏥 Dengue Bed & ICU Allocation (Sep–Dec 2024)")
-
-with st.expander("ℹ️ How this works", expanded=False):
+with st.expander("ℹ️ How this app works", expanded=False):
     st.markdown("""
-    - **Inputs**: Upload three Excel files — **Predicted dataset AIO**, **Allocation dataset**, and **Location matrix**.
-    - **Severity**: The app will calculate severity using the **Allocation dataset**:
-        - If that file has a column named **`equation`** (or **`severity_equation`**) that is a valid expression using variables `platelet`, `igg`, `igm`, `ns1`, `age`, `weight`, we evaluate it.
-        - If it yields a numeric **score**, thresholds can be supplied below (or auto-detected if present in the file as `mild_max`, `moderate_max`, `severe_max`).
-        - If no equation is found, we use a conservative fallback:
-            - **Very Severe** if `platelet < 20000`
-            - **Severe** if `platelet < 50000` or (`ns1` is True and `platelet < 80000`)
-            - **Moderate** otherwise if `ns1` is True or (`igg` or `igm` is True)
-            - **Mild** otherwise
-        - **Severe/Very Severe** → ICU required; **Mild/Moderate** → Normal bed.
-    - **Beds**: For each (Hospital, Date), we use *predicted* availability columns you choose in the sidebar.
-    - **Routing**: If no vacancy at the chosen hospital, we'll route to the **nearest** hospital with vacancy using distances from the **Location matrix**.
-    - **State**: Each successful allocation **reserves** a bed for that (Hospital, Date) in the app session.
-    """)
+- **Predictions (required):** Provide a prediction file (XLSX/CSV). The app prefers **predicted availability columns** (e.g., "Predicted Normal Beds Available", "Predicted ICU Beds Available").
+  - If those don’t exist, it falls back to `Beds Total - Beds Occupied` and `ICU Beds Total - ICU Beds Occupied`.
+  - Supports either a **Date** column or **Year/Month** columns (monthly).
+- **Allocation dataset (optional but recommended):** 
+  - If it has an `equation`/`severity_equation` column, it will be safely evaluated with variables: `platelet, igg, igm, ns1, age, weight`.
+  - If it has a **rules table** (e.g., `platelet_min/max, age_min/max, weight_min/max, ns1_required, igg_required, igm_required, severity`), it applies the first matching rule.
+  - Otherwise, a conservative fallback is used.
+- **Location matrix (required for rerouting):** CSV or XLSX; either **wide** (matrix) or **long** (`from, to, distance`). Used to reroute to nearest hospital with vacancy.
+- **Rerouting & Reservations:** If no vacancy at selected hospital, the app reroutes to nearest hospital with capacity. When you confirm, the bed is **reserved in-session** (does not modify source files).
+""")
 
-# ----------------------
-# Utility helpers
-# ----------------------
-
-@st.cache_data(show_spinner=False)
-def read_excel_any(path_or_buffer, sheet=None):
+# -----------------------------
+# Helpers
+# -----------------------------
+def read_any(path_or_buf: Union[str, Path], sheet: Optional[str] = None):
+    """Read CSV or Excel (single sheet)."""
     try:
-        return pd.read_excel(path_or_buffer, sheet_name=sheet)
+        p = str(path_or_buf)
+        if p.lower().endswith(".csv"):
+            return pd.read_csv(path_or_buf)
+        # Excel
+        return pd.read_excel(path_or_buf, sheet_name=sheet)
     except Exception as e:
-        st.error(f"Failed to read Excel: {e}")
+        st.error(f"Failed to read file: {path_or_buf}\n{e}")
         return None
 
-def autodetect_columns(df: pd.DataFrame, candidates: List[str]):
-    """Return the first matching column by case-insensitive partial match."""
-    cols_lower = {c.lower(): c for c in df.columns}
+def read_all_sheets_excel(path_or_buf: Union[str, Path]):
+    """Read all sheets from an Excel file. Returns dict or None."""
+    try:
+        return pd.read_excel(path_or_buf, sheet_name=None)
+    except Exception as e:
+        st.warning(f"Could not read all sheets from: {path_or_buf}\n{e}")
+        return None
+
+def autodetect(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    """Return first column that contains any candidate (case-insensitive substring)."""
+    if not isinstance(df, pd.DataFrame):
+        return None
     for patt in candidates:
         for c in df.columns:
-            if patt.lower() in c.lower():
+            if patt.lower() in str(c).lower():
                 return c
     return None
 
+def ensure_dataframe_columns_stripped(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    if isinstance(df, pd.DataFrame):
+        df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+def normalize_hospital_name(x) -> str:
+    return str(x).strip()
+
+def parse_date_series(s: pd.Series) -> pd.Series:
+    def _one(x):
+        if isinstance(x, (pd.Timestamp, datetime)):
+            return pd.to_datetime(x).date()
+        try:
+            return pd.to_datetime(x, errors="coerce").date()
+        except Exception:
+            return pd.NaT
+    return s.apply(_one)
+
 def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Accept either:
-    1) Long form: columns like [from, to, distance_km]
-    2) Wide form: first column = hospital, others = hospitals with numeric distances
-    Returns a square DataFrame indexed/columns by hospital names.
+    Accept:
+    - Long form: columns like [from, to, distance]
+    - Wide form: first col = hospital, others = hospitals with numeric distances
+    Returns symmetric matrix.
     """
-    dfc = df.copy()
-    # Try long form detection
-    long_from = autodetect_columns(dfc, ["from", "source", "origin", "hospital_from", "start"])
-    long_to = autodetect_columns(dfc, ["to", "dest", "destination", "hospital_to", "end"])
-    long_dist = autodetect_columns(dfc, ["distance", "km", "dist"])
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    # Try long form
+    long_from = autodetect(df, ["from", "source", "origin", "hospital_from", "start"])
+    long_to   = autodetect(df, ["to", "dest", "destination", "hospital_to", "end"])
+    long_dist = autodetect(df, ["distance", "km", "dist"])
     if all([long_from, long_to, long_dist]):
-        piv = dfc[[long_from, long_to, long_dist]].copy()
+        piv = df[[long_from, long_to, long_dist]].copy()
         piv.columns = ["from", "to", "distance"]
         mat = piv.pivot_table(index="from", columns="to", values="distance", aggfunc="min")
-        # make symmetric if needed
-        mat2 = mat.combine_first(mat.T)
-        return mat2
-    # Try wide form
-    if dfc.shape[1] > 2:
-        # assume first column is hospital name/id
-        dfc = dfc.set_index(dfc.columns[0])
-        # coerce numeric
-        for c in dfc.columns:
-            dfc[c] = pd.to_numeric(dfc[c], errors="coerce")
-        # make symmetric
-        mat2 = dfc.combine_first(dfc.T)
-        return mat2
-    raise ValueError("Could not interpret Location matrix format. Provide either long or wide distance matrix.")
+        return mat.combine_first(mat.T)
 
-def safe_eval_equation(eq: str, vars_dict: Dict) -> Optional[float]:
-    """
-    Evaluate an equation string safely with restricted globals.
-    Returns numeric score or a string severity if the expression yields text.
-    Allowed names: basic math + numpy via np.
-    Variables available: platelet, igg, igm, ns1, age, weight.
-    """
-    allowed_builtins = {}
-    safe_globals = {"__builtins__": allowed_builtins, "np": np, "min": min, "max": max, "abs": abs, "round": round}
-    try:
-        res = eval(eq, safe_globals, vars_dict)
-        return res
-    except Exception as e:
-        st.warning(f"Equation eval failed: {e}")
+    # Try wide form
+    if df.shape[1] > 2:
+        df = df.set_index(df.columns[0])
+        for c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        return df.combine_first(df.T)
+
+    raise ValueError("Could not interpret Location matrix format. Provide long or wide form.")
+
+def to_bool_or_none(x):
+    if pd.isna(x):
+        return None
+    s = str(x).strip().lower()
+    if s in ["1", "true", "yes", "y", "t", "required", "need", "needed", "pos", "positive"]:
+        return True
+    if s in ["0", "false", "no", "n", "f", "not required", "neg", "negative"]:
+        return False
+    return None
+
+def get_rules_from_df(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    # Need a severity column
+    sev_col = None
+    for c in df.columns:
+        if "severity" in str(c).lower():
+            sev_col = c
+            break
+    if not sev_col:
         return None
 
-def severity_from_equation(df_alloc: pd.DataFrame, patient_vars: Dict, thresholds: Dict) -> Tuple[str, Optional[float]]:
+    def pick(alts):
+        for patt in alts:
+            hit = autodetect(df, [patt])
+            if hit:
+                return hit
+        return None
+
+    col_map = {
+        "platelet_min": pick(["platelet_min", "plt_min", "platelet lower", "min_platelet"]),
+        "platelet_max": pick(["platelet_max", "plt_max", "platelet upper", "max_platelet"]),
+        "age_min":      pick(["age_min", "min_age"]),
+        "age_max":      pick(["age_max", "max_age"]),
+        "weight_min":   pick(["weight_min", "min_weight"]),
+        "weight_max":   pick(["weight_max", "max_weight"]),
+        "ns1_required": pick(["ns1_required", "ns1 req", "require ns1", "ns1_flag"]),
+        "igg_required": pick(["igg_required", "igg req", "require igg"]),
+        "igm_required": pick(["igm_required", "igm req", "require igm", "ign_required"]),
+    }
+
+    rules = df[df[sev_col].notna()].copy()
+    if rules.empty:
+        return None
+
+    # Normalize numeric bounds
+    for k in ["platelet_min","platelet_max","age_min","age_max","weight_min","weight_max"]:
+        src = col_map.get(k)
+        rules[k] = pd.to_numeric(rules[src], errors="coerce") if src else np.nan
+
+    # Normalize boolean requirements
+    for k in ["ns1_required","igg_required","igm_required"]:
+        src = col_map.get(k)
+        rules[k] = rules[src].apply(to_bool_or_none) if src else None
+
+    rules["severity"] = rules[sev_col].astype(str).str.strip().str.title()
+    return rules[["platelet_min","platelet_max","age_min","age_max","weight_min","weight_max",
+                  "ns1_required","igg_required","igm_required","severity"]]
+
+def match_rules(rules: pd.DataFrame, vars: Dict) -> Optional[str]:
+    for _, r in rules.iterrows():
+        ok = True
+        if pd.notna(r["platelet_min"]) and not (vars["platelet"] >= r["platelet_min"]): ok = False
+        if pd.notna(r["platelet_max"]) and not (vars["platelet"] <= r["platelet_max"]): ok = False
+        if pd.notna(r["age_min"])      and not (vars["age"]      >= r["age_min"]): ok = False
+        if pd.notna(r["age_max"])      and not (vars["age"]      <= r["age_max"]): ok = False
+        if pd.notna(r["weight_min"])   and not (vars["weight"]   >= r["weight_min"]): ok = False
+        if pd.notna(r["weight_max"])   and not (vars["weight"]   <= r["weight_max"]): ok = False
+        for flag in ["ns1_required","igg_required","igm_required"]:
+            req = r[flag]
+            if req is not None:
+                key = flag.split("_")[0]  # ns1/igg/igm
+                if req is True and not vars[key]: ok = False
+                if req is False and vars[key]: ok = False
+        if ok:
+            return r["severity"]
+    return None
+
+def safe_eval_equation(eq: str, vars_dict: Dict) -> Optional[Union[float, str]]:
+    safe_globals = {"__builtins__": {}, "np": np, "min": min, "max": max, "abs": abs, "round": round}
+    try:
+        return eval(eq, safe_globals, vars_dict)
+    except Exception:
+        return None
+
+def compute_severity_from_allocation(alloc: Optional[Dict[str, pd.DataFrame]], patient_vars: Dict) -> Tuple[str, Optional[float]]:
     """
-    Try to find an equation and compute severity.
-    - If result is string among {mild, moderate, severe, very severe} (any case), return it.
-    - If numeric, map to severity using thresholds.
+    1) If any sheet has an equation column, evaluate it (string category or numeric score).
+    2) Else if any sheet looks like a rules table, apply first matching rule.
+    3) Else fallback.
     """
-    cand_cols = [c for c in df_alloc.columns if c.lower() in ("equation", "severity_equation")]
-    eq = None
-    if cand_cols:
-        # pick the first non-null equation
-        ser = df_alloc[cand_cols[0]].dropna().astype(str)
-        if not ser.empty:
-            eq = ser.iloc[0]
-    if not eq:
-        return ("__fallback__", None)
+    # 1) Equation
+    if isinstance(alloc, dict):
+        for _, df in alloc.items():
+            df = ensure_dataframe_columns_stripped(df)
+            if not isinstance(df, pd.DataFrame):
+                continue
+            eq_col = None
+            for c in df.columns:
+                if "equation" in c.lower():
+                    eq_col = c
+                    break
+            if eq_col:
+                series = df[eq_col].dropna().astype(str)
+                if not series.empty:
+                    eq = series.iloc[0]
+                    res = safe_eval_equation(eq, patient_vars)
+                    if isinstance(res, str):
+                        s = res.strip().lower()
+                        mapping = {"mild": "Mild", "moderate": "Moderate", "severe": "Severe",
+                                   "very severe": "Very Severe", "very_severe": "Very Severe", "normal": "Normal"}
+                        return (mapping.get(s, "Moderate"), None)
+                    if isinstance(res, (int, float, np.integer, np.floating)):
+                        score = float(res)
+                        # try thresholds if present
+                        th = {"mild_max": 0.25, "moderate_max": 0.5, "severe_max": 0.8}
+                        for tc in df.columns:
+                            lc = tc.lower()
+                            if "mild" in lc and "max" in lc:
+                                val = pd.to_numeric(df[tc], errors="coerce").dropna()
+                                if not val.empty: th["mild_max"] = float(val.iloc[0])
+                            if "moderate" in lc and "max" in lc:
+                                val = pd.to_numeric(df[tc], errors="coerce").dropna()
+                                if not val.empty: th["moderate_max"] = float(val.iloc[0])
+                            if "severe" in lc and "max" in lc:
+                                val = pd.to_numeric(df[tc], errors="coerce").dropna()
+                                if not val.empty: th["severe_max"] = float(val.iloc[0])
+                        if score <= th["mild_max"]: return ("Mild", score)
+                        if score <= th["moderate_max"]: return ("Moderate", score)
+                        if score <= th["severe_max"]: return ("Severe", score)
+                        return ("Very Severe", score)
 
-    res = safe_eval_equation(eq, patient_vars)
-    if res is None:
-        return ("__fallback__", None)
+    # 2) Rules table
+    if isinstance(alloc, dict):
+        for _, df in alloc.items():
+            df = ensure_dataframe_columns_stripped(df)
+            if not isinstance(df, pd.DataFrame):
+                continue
+            rules = get_rules_from_df(df)
+            if rules is not None and not rules.empty:
+                sev = match_rules(rules, patient_vars)
+                if sev:
+                    return (sev, None)
 
-    if isinstance(res, str):
-        s = res.strip().lower()
-        mapping = {"mild": "Mild", "moderate": "Moderate", "severe": "Severe", "very severe": "Very Severe", "very_severe": "Very Severe"}
-        if s in mapping:
-            return (mapping[s], None)
-        # if string but not recognized, fallback
-        return ("__fallback__", None)
+    # 3) Fallback (conservative)
+    plate, ns1, igg, igm = patient_vars["platelet"], patient_vars["ns1"], patient_vars["igg"], patient_vars["igm"]
+    if plate is not None and plate < 20000: return ("Very Severe", None)
+    if (plate is not None and plate < 50000) or (ns1 and plate is not None and plate < 80000): return ("Severe", None)
+    if ns1 or igg or igm: return ("Moderate", None)
+    return ("Normal", None)
 
-    # Numeric score → thresholds
-    if isinstance(res, (int, float, np.integer, np.floating)):
-        score = float(res)
-        mild_max = thresholds.get("mild_max", 0.25)
-        moderate_max = thresholds.get("moderate_max", 0.5)
-        severe_max = thresholds.get("severe_max", 0.8)
-        if score <= mild_max:
-            return ("Mild", score)
-        elif score <= moderate_max:
-            return ("Moderate", score)
-        elif score <= severe_max:
-            return ("Severe", score)
-        else:
-            return ("Very Severe", score)
-
-    return ("__fallback__", None)
-
-def severity_fallback(patient_vars: Dict) -> str:
-    plate = patient_vars["platelet"]
-    ns1 = bool(patient_vars["ns1"])
-    igg = bool(patient_vars["igg"])
-    igm = bool(patient_vars["igm"])
-    # conservative placeholder rules
-    if plate is not None and plate < 20000:
-        return "Very Severe"
-    if (plate is not None and plate < 50000) or (ns1 and plate is not None and plate < 80000):
-        return "Severe"
-    if ns1 or igg or igm:
-        return "Moderate"
-    return "Mild"
-
-def required_bed_type(severity: str) -> str:
-    return "ICU" if severity in ("Severe", "Very Severe") else "Normal"
+def required_resource(severity: str) -> str:
+    return "ICU" if severity in ("Severe", "Very Severe") else "General Bed"
 
 def nearest_with_vacancy(dist_mat: pd.DataFrame, start_hospital: str, candidates: List[str]) -> Optional[str]:
     if start_hospital not in dist_mat.index:
         return None
-    row = dist_mat.loc[start_hospital, candidates]
-    row = row.dropna()
-    if row.empty:
+    try:
+        row = dist_mat.loc[start_hospital, candidates].dropna()
+    except Exception:
+        # Some labels might not match exactly; try normalized labels
         return None
+    if row.empty: return None
     return row.idxmin()
 
-def normalize_hospital(x):
-    return str(x).strip()
+# -----------------------------
+# Sidebar: File inputs
+# -----------------------------
+st.sidebar.header("📁 Data")
+pred_file = st.sidebar.file_uploader("Predictions (CSV/XLSX)", type=["csv","xlsx"])
+alloc_file = st.sidebar.file_uploader("Allocation dataset (XLSX) — optional", type=["xlsx"])
+loc_file = st.sidebar.file_uploader("Location matrix (CSV/XLSX)", type=["csv","xlsx"])
 
-# ----------------------
-# Sidebar: Upload & mapping
-# ----------------------
+# Also allow common repo names for zero-config
+def default_if_exists(name, current):
+    return current or (Path(name) if Path(name).exists() else None)
 
-st.sidebar.header("📁 Data files")
-predicted_file = st.sidebar.file_uploader("Predicted dataset AIO (.xlsx)", type=["xlsx"], key="pred_file")
-alloc_file = st.sidebar.file_uploader("Allocation dataset (.xlsx)", type=["xlsx"], key="alloc_file")
-loc_file = st.sidebar.file_uploader("Location matrix (.xlsx)", type=["xlsx"], key="loc_file")
+pred_file = default_if_exists("Predicted dataset AIO.xlsx", pred_file)
+pred_file = default_if_exists("ensemble_predictions_2026_2027_dynamic.xlsx", pred_file)
 
-# Try defaults if present in working directory
-if predicted_file is None:
-    default_pred = "Predicted dataset AIO.xlsx"
-    if Path(default_pred).exists():
-        predicted_file = default_pred
-if alloc_file is None:
-    default_alloc = "Allocation dataset.xlsx"
-    if Path(default_alloc).exists():
-        alloc_file = default_alloc
-if loc_file is None:
-    default_loc = "Location matrix.xlsx"
-    if Path(default_loc).exists():
-        loc_file = default_loc
+alloc_file = default_if_exists("Allocation dataset.xlsx", alloc_file)
 
-if not all([predicted_file, alloc_file, loc_file]):
-    st.info("Please upload all three files (or place them alongside this app with the exact names).")
+loc_file = default_if_exists("Location matrix.xlsx", loc_file)
+loc_file = default_if_exists("distance matrix.csv", loc_file)
+
+if not pred_file or not loc_file:
+    st.error("Please provide at least a **Predictions** file and a **Location matrix** (CSV/XLSX).")
     st.stop()
 
-df_pred = read_excel_any(predicted_file)
-df_alloc = read_excel_any(alloc_file)
-df_loc = read_excel_any(loc_file)
+# -----------------------------
+# Load data
+# -----------------------------
+df_pred = read_any(pred_file)
+df_loc = read_any(loc_file)
+alloc_sheets = read_all_sheets_excel(alloc_file) if alloc_file else None
 
-if df_pred is None or df_alloc is None or df_loc is None:
+df_pred = ensure_dataframe_columns_stripped(df_pred)
+df_loc = ensure_dataframe_columns_stripped(df_loc)
+
+if df_pred is None or df_loc is None:
     st.stop()
 
-# Clean / standardize a bit
-for d in [df_pred, df_alloc, df_loc]:
-    d.columns = [str(c).strip() for c in d.columns]
+# -----------------------------
+# Prediction mapping & normalization
+# -----------------------------
+# Try to find hospital, date OR year/month
+hospital_col = autodetect(df_pred, ["hospital","facility","center","centre"])
+date_col = autodetect(df_pred, ["date"])
+year_col = autodetect(df_pred, ["year"])
+month_col = autodetect(df_pred, ["month"])
 
-# Build distance matrix
+if hospital_col is None:
+    st.error("Couldn't detect a hospital column in predictions. Try naming it like 'Hospital'.")
+    st.stop()
+
+df_pred["_Hospital"] = df_pred[hospital_col].astype(str).map(normalize_hospital_name)
+
+if date_col:
+    df_pred["_Date"] = parse_date_series(df_pred[date_col])
+elif year_col and month_col:
+    try:
+        df_pred["_Date"] = pd.to_datetime(df_pred[year_col].astype(int).astype(str) + "-" +
+                                          df_pred[month_col].astype(int).astype(str) + "-01",
+                                          errors="coerce").dt.date
+    except Exception as e:
+        st.error(f"Failed constructing Date from Year/Month: {e}")
+        st.stop()
+else:
+    st.error("Provide either a Date column or both Year and Month in predictions.")
+    st.stop()
+
+# Prefer predicted availability columns; otherwise compute availability from totals/occupied
+pred_normal_avail_col = autodetect(df_pred, ["predicted normal beds available", "normal beds available (pred)", "beds available predicted", "pred beds"])
+pred_icu_avail_col    = autodetect(df_pred, ["predicted icu beds available", "icu beds available (pred)", "icu available predicted", "pred icu"])
+
+beds_total_col     = autodetect(df_pred, ["beds total","total beds"])
+icu_total_col      = autodetect(df_pred, ["icu beds total","total icu"])
+beds_occ_col       = autodetect(df_pred, ["beds occupied","occupied beds"])
+icu_occ_col        = autodetect(df_pred, ["icu beds occupied","occupied icu"])
+
+if pred_normal_avail_col and pred_icu_avail_col:
+    df_pred["_BedsAvail"] = pd.to_numeric(df_pred[pred_normal_avail_col], errors="coerce").fillna(0).astype(int)
+    df_pred["_ICUAvail"]  = pd.to_numeric(df_pred[pred_icu_avail_col], errors="coerce").fillna(0).astype(int)
+elif all([beds_total_col, beds_occ_col, icu_total_col, icu_occ_col]):
+    df_pred["_BedsAvail"] = (pd.to_numeric(df_pred[beds_total_col], errors="coerce") -
+                             pd.to_numeric(df_pred[beds_occ_col], errors="coerce")).fillna(0).astype(int)
+    df_pred["_ICUAvail"]  = (pd.to_numeric(df_pred[icu_total_col], errors="coerce") -
+                             pd.to_numeric(df_pred[icu_occ_col], errors="coerce")).fillna(0).astype(int)
+else:
+    st.error("Could not find predicted availability columns or fallback (Totals & Occupied) columns.")
+    st.stop()
+
+# Clean by date and hospital
+df_pred = df_pred.dropna(subset=["_Date"])
+availability = (
+    df_pred.groupby(["_Hospital","_Date"], as_index=False)[["_BedsAvail","_ICUAvail"]].sum()
+    .set_index(["_Hospital","_Date"]).sort_index()
+)
+
+# -----------------------------
+# Distance matrix
+# -----------------------------
 try:
     dist_mat = build_distance_matrix(df_loc)
-    dist_mat.index = dist_mat.index.map(normalize_hospital)
-    dist_mat.columns = dist_mat.columns.map(normalize_hospital)
+    dist_mat.index = dist_mat.index.map(normalize_hospital_name)
+    dist_mat.columns = dist_mat.columns.map(normalize_hospital_name)
 except Exception as e:
     st.error(f"Location matrix error: {e}")
     st.stop()
 
-# Column mapping for predicted dataset
-st.sidebar.header("🧭 Column mapping (Predicted)")
-# Attempt auto-detects
-pred_hosp_col = autodetect_columns(df_pred, ["hospital", "facility", "center", "centre"])
-pred_date_col = autodetect_columns(df_pred, ["date", "day"])
-pred_bed_col = autodetect_columns(df_pred, ["available bed", "bed available", "normal bed", "free bed", "beds free", "beds available"])
-pred_icu_col = autodetect_columns(df_pred, ["icu available", "icu bed", "icu_free", "free icu", "icu"])
-
-pred_hosp_col = st.sidebar.selectbox("Hospital column", options=df_pred.columns.tolist(), index=(df_pred.columns.tolist().index(pred_hosp_col) if pred_hosp_col in df_pred.columns else 0))
-pred_date_col = st.sidebar.selectbox("Date column", options=df_pred.columns.tolist(), index=(df_pred.columns.tolist().index(pred_date_col) if pred_date_col in df_pred.columns else 0))
-pred_bed_col = st.sidebar.selectbox("**Predicted** Normal beds available", options=df_pred.columns.tolist(), index=(df_pred.columns.tolist().index(pred_bed_col) if pred_bed_col in df_pred.columns else 0))
-pred_icu_col = st.sidebar.selectbox("**Predicted** ICU beds available", options=df_pred.columns.tolist(), index=(df_pred.columns.tolist().index(pred_icu_col) if pred_icu_col in df_pred.columns else 0))
-
-# Normalize core fields
-df_pred["_Hospital"] = df_pred[pred_hosp_col].apply(normalize_hospital)
-# Parse date
-def _parse_dt(x):
-    if isinstance(x, (pd.Timestamp, datetime)):
-        return pd.to_datetime(x).date()
-    try:
-        return pd.to_datetime(x, dayfirst=True, errors="coerce").date()
-    except Exception:
-        return pd.NaT
-df_pred["_Date"] = df_pred[pred_date_col].apply(_parse_dt)
-df_pred["_BedsAvail"] = pd.to_numeric(df_pred[pred_bed_col], errors="coerce").fillna(0).astype(int)
-df_pred["_ICUAvail"] = pd.to_numeric(df_pred[pred_icu_col], errors="coerce").fillna(0).astype(int)
-
-# Filter to Sep–Dec 2024 (as per request)
-mask_range = (pd.to_datetime(df_pred["_Date"]) >= pd.to_datetime("2024-09-01")) & (pd.to_datetime(df_pred["_Date"]) <= pd.to_datetime("2024-12-31"))
-df_pred = df_pred.loc[mask_range].copy()
-
-if df_pred.empty:
-    st.warning("Predicted dataset has no rows in Sep–Dec 2024 after parsing. Check date column mapping.")
-    st.stop()
-
-# Build an availability index
-availability = (
-    df_pred.groupby(["_Hospital", "_Date"], as_index=False)[["_BedsAvail", "_ICUAvail"]].sum()
-    .set_index(["_Hospital", "_Date"])
-    .sort_index()
-)
-
-# Session state to hold reservations
+# -----------------------------
+# Session reservations
+# -----------------------------
 if "reservations" not in st.session_state:
-    st.session_state["reservations"] = {}  # key: (hospital, date, type) -> count reserved
+    st.session_state["reservations"] = {}  # (hospital, date, type) -> count
 
 def get_remaining(hospital: str, date, bed_type: str) -> int:
     key = (hospital, date)
-    base = availability.loc[key, "_ICUAvail" if bed_type == "ICU" else "_BedsAvail"] if key in availability.index else 0
-    # subtract reservations of that type
-    rkey = (hospital, date, bed_type)
-    reserved = st.session_state["reservations"].get(rkey, 0)
-    remain = int(max(0, base - reserved))
-    return remain
+    base = 0
+    if key in availability.index:
+        base = int(availability.loc[key, "_ICUAvail" if bed_type == "ICU" else "_BedsAvail"])
+    reserved = st.session_state["reservations"].get((hospital, date, bed_type), 0)
+    return max(0, base - reserved)
 
 def reserve_bed(hospital: str, date, bed_type: str, n: int = 1):
-    rkey = (hospital, date, bed_type)
-    st.session_state["reservations"][rkey] = st.session_state["reservations"].get(rkey, 0) + n
+    k = (hospital, date, bed_type)
+    st.session_state["reservations"][k] = st.session_state["reservations"].get(k, 0) + n
 
-# Severity thresholds (for numeric equation outputs)
-with st.sidebar.expander("⚙️ Thresholds (only if equation returns a numeric score)"):
-    mild_max = st.number_input("mild_max", value=0.25, min_value=0.0, max_value=1.0, step=0.01)
-    moderate_max = st.number_input("moderate_max", value=0.5, min_value=0.0, max_value=1.0, step=0.01)
-    severe_max = st.number_input("severe_max", value=0.8, min_value=0.0, max_value=1.0, step=0.01)
-
-# ----------------------
-# Patient intake
-# ----------------------
-
-st.subheader("🧑‍⚕️ Patient Intake")
-
-colA, colB, colC = st.columns([1.2, 1, 1.2])
-
-with colA:
-    hospital_input = st.selectbox("Hospital visited", sorted(availability.index.get_level_values(0).unique().tolist()))
-    visit_date = st.date_input("Visit date", value=max(availability.index.get_level_values(1)), min_value=min(availability.index.get_level_values(1)), max_value=max(availability.index.get_level_values(1)))
-with colB:
-    platelet = st.number_input("Platelet count (/µL)", min_value=0, step=1000, value=80000)
-    ns1 = st.selectbox("NS1", options=["Negative", "Positive"])
-with colC:
-    igg = st.selectbox("IgG", options=["Negative", "Positive"])
-    igm_label = "IgM (a.k.a. 'ign')"
-    igm = st.selectbox(igm_label, options=["Negative", "Positive"])
-
-colD, colE = st.columns([1, 1])
-with colD:
-    age = st.number_input("Age (years)", min_value=0, max_value=120, value=25)
-with colE:
-    weight = st.number_input("Weight (kg)", min_value=1.0, max_value=250.0, value=60.0, step=0.5)
-
-patient_vars = {
-    "platelet": float(platelet),
-    "ns1": True if ns1 == "Positive" else False,
-    "igg": True if igg == "Positive" else False,
-    "igm": True if igm == "Positive" else False,
-    "age": float(age),
-    "weight": float(weight),
-}
-
-# Compute severity
-severity, score = severity_from_equation(df_alloc, patient_vars, {"mild_max": mild_max, "moderate_max": moderate_max, "severe_max": severe_max})
-if severity == "__fallback__":
-    severity = severity_fallback(patient_vars)
-bed_type = required_bed_type(severity)
-
-st.markdown(f"### 🩺 Severity: **{severity}** {'(score: {:.3f})'.format(score) if score is not None else ''}")
-st.markdown(f"### 🛏️ Required bed: **{bed_type}**")
-
-# Availability at visited hospital
-rem_here = get_remaining(hospital_input, visit_date, bed_type)
-st.metric(label=f"Remaining {bed_type} beds at {hospital_input} on {visit_date}", value=rem_here)
-
-# Candidate hospitals with vacancy
+# -----------------------------
+# UI – Patient intake
+# -----------------------------
 hospitals = sorted(availability.index.get_level_values(0).unique().tolist())
-candidates = [h for h in hospitals if get_remaining(h, visit_date, bed_type) > 0]
+if not hospitals:
+    st.error("No hospitals found in predictions after processing.")
+    st.stop()
 
-if rem_here > 0:
-    chosen_hospital = hospital_input
-    reason = "Requested hospital has vacancy."
-else:
-    # route to nearest with vacancy using distance matrix
-    reroute = nearest_with_vacancy(dist_mat, hospital_input, candidates)
-    chosen_hospital = reroute
-    reason = "No vacancy at requested hospital; routed to nearest with vacancy."
+dates = sorted(list(set([d for _, d in availability.index])))
+if not dates:
+    st.error("No dates found in predictions after processing.")
+    st.stop()
 
-if chosen_hospital is None:
-    st.error("❌ No hospitals with vacancy found for the selected date and bed type.")
-else:
-    with st.container(border=True):
-        st.markdown("#### 🧭 Allocation Decision")
-        st.write(f"- **Assigned Hospital**: **{chosen_hospital}**  ")
-        st.write(f"- **Date**: **{visit_date}**  ")
-        st.write(f"- **Bed Type**: **{bed_type}**  ")
-        st.write(f"- **Reason**: {reason}")
-        # Distance info if rerouted
-        if chosen_hospital != hospital_input:
+with st.form("allocation_form"):
+    st.subheader("🔍 Patient Information")
+    hospital = st.selectbox("Hospital Name", hospitals)
+    date_input = st.date_input("Admission/Test Date", value=max(dates), min_value=min(dates), max_value=max(dates))
+    colA, colB = st.columns(2)
+    with colA:
+        age = st.number_input("Age", min_value=0, max_value=120, value=25)
+        weight = st.number_input("Weight (kg)", min_value=1, max_value=250, value=60)
+        platelet = st.number_input("Platelet Count (/µL)", min_value=0, value=120000, step=1000)
+    with colB:
+        igg = st.selectbox("IgG", ["Positive", "Negative"])
+        igm = st.selectbox("IgM (a.k.a. 'ign')", ["Positive", "Negative"])
+        ns1 = st.selectbox("NS1", ["Positive", "Negative"])
+    submit = st.form_submit_button("🚑 Allocate Patient")
+
+if submit:
+    # severity
+    patient_vars = {
+        "platelet": float(platelet),
+        "igg": igg == "Positive",
+        "igm": igm == "Positive",
+        "ns1": ns1 == "Positive",
+        "age": float(age),
+        "weight": float(weight),
+    }
+    severity, score = compute_severity_from_allocation(alloc_sheets, patient_vars)
+    resource_needed = required_resource(severity)
+
+    # availability check
+    rem_here = get_remaining(hospital, date_input, "ICU" if resource_needed == "ICU" else "General Bed")
+    # We store only "ICU" or "Normal" internally
+    bed_key = "ICU" if resource_needed == "ICU" else "Normal"
+
+    assigned_hospital = hospital
+    rerouted_distance = None
+    note = ""
+
+    if rem_here > 0:
+        note = "Assigned at selected hospital"
+    else:
+        cands = [h for h in hospitals if get_remaining(h, date_input, bed_key) > 0]
+        reroute = nearest_with_vacancy(dist_mat, hospital, cands)
+        if reroute:
+            assigned_hospital = reroute
             try:
-                dist_val = dist_mat.loc[normalize_hospital(hospital_input), normalize_hospital(chosen_hospital)]
+                rerouted_distance = dist_mat.loc[hospital, reroute]
             except Exception:
-                dist_val = np.nan
-            if pd.notna(dist_val):
-                st.write(f"- **Distance from visited hospital**: {dist_val:.2f} (units as per file)")
-        # Confirm allocation
-        if st.button("✅ Confirm & Reserve Bed", type="primary"):
-            reserve_bed(chosen_hospital, visit_date, bed_type, n=1)
-            st.success(f"Reserved 1 {bed_type} bed at {chosen_hospital} for {visit_date}.")
+                rerouted_distance = None
+            note = f"Rerouted to nearest hospital with {resource_needed}"
+        else:
+            note = "No hospitals with vacancy found for selected date and resource"
 
-# ----------------------
+    # Reserve if we succeeded
+    if "No hospitals" not in note:
+        reserve_bed(assigned_hospital, date_input, bed_key, n=1)
+
+    st.subheader("📋 Allocation Result")
+    result = {
+        "Date": pd.to_datetime(date_input).strftime("%Y-%m-%d"),
+        "Severity": severity if score is None else f"{severity} (score={score:.3f})",
+        "Resource Needed": resource_needed,
+        "Hospital Tried": hospital,
+        "Available at Current Hospital": "Yes" if assigned_hospital == hospital and note.startswith("Assigned") else "No",
+        "Assigned Hospital": assigned_hospital,
+    }
+    if rerouted_distance is not None:
+        result["Distance (matrix units)"] = float(rerouted_distance)
+    result["Note"] = note
+    st.json(result)
+
+# -----------------------------
 # Explorer
-# ----------------------
+# -----------------------------
 st.divider()
 st.subheader("📊 Availability Explorer")
 
-sel_bed_type = st.selectbox("Bed type", ["Normal", "ICU"], index=0)
-sel_hospital = st.selectbox("Hospital", hospitals, index=(hospitals.index(hospital_input) if hospital_input in hospitals else 0))
+sel_type = st.selectbox("Bed type", ["General Bed","ICU"], index=0)
+sel_hosp = st.selectbox("Hospital", hospitals, index=0)
 
-dates = sorted(list(set([d for h, d in availability.index])))
-records = []
+rows = []
 for d in dates:
-    key = (sel_hospital, d)
-    base = availability.loc[key, "_ICUAvail" if sel_bed_type == "ICU" else "_BedsAvail"] if key in availability.index else 0
-    reserved = st.session_state["reservations"].get((sel_hospital, d, "ICU" if sel_bed_type=="ICU" else "Normal"), 0)
-    remain = max(0, int(base - reserved))
-    records.append({"Date": d, "Base Available": int(base), "Reserved": int(reserved), "Remaining": remain})
-df_view = pd.DataFrame(records)
-st.dataframe(df_view, use_container_width=True, hide_index=True)
+    base = 0
+    key = (sel_hosp, d)
+    if key in availability.index:
+        base = int(availability.loc[key, "_ICUAvail" if sel_type == "ICU" else "_BedsAvail"])
+    reserved = st.session_state["reservations"].get((sel_hosp, d, "ICU" if sel_type == "ICU" else "Normal"), 0)
+    rows.append({"Date": d, "Base Available": base, "Reserved (this session)": reserved, "Remaining": max(0, base - reserved)})
 
-# ----------------------
-# Notes for operators
-# ----------------------
-with st.expander("📝 Notes & Assumptions", expanded=False):
-    st.markdown("""
-    - The app **does not** modify your source Excel files; reservations are tracked only **in session**.
-    - To make severity rules *data-driven*, add a column named **`equation`** in the **Allocation dataset** (any sheet).
-      Example equations (Python-like):
-      - `"0.9 if platelet < 20000 else 0.7 if platelet < 50000 else 0.5 if ns1 else 0.2"`
-      - `" 'Very Severe' if platelet < 20000 else ('Severe' if platelet < 50000 else 'Moderate') "`
-      Variables available: `platelet`, `igg`, `igm`, `ns1`, `age`, `weight`.
-    - If your equation returns a **numeric score** in [0,1], we map it to categories using the thresholds in the sidebar.
-    - The **Location matrix** can be:
-      - **Long form**: columns like `from`, `to`, `distance` (case-insensitive, partial names OK)
-      - **Wide form**: first column hospital names, remaining columns the distance to each hospital.
-    - Availability columns from the **Predicted dataset** are configurable in the sidebar mapping.
-    """)
+st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
