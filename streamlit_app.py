@@ -307,7 +307,9 @@ if df_pred is None or df_loc is None:
 # Prediction mapping & normalization
 # -----------------------------
 # Try to find hospital, date OR year/month
-hospital_col = autodetect(df_pred, ["hospital","facility","center","centre"])
+hospital_col = autodetect(df_pred, [
+    "hospital", "Hospital Name", "hosp", "facility", "center", "centre", "clinic"
+])
 date_col = autodetect(df_pred, ["date"])
 year_col = autodetect(df_pred, ["year"])
 month_col = autodetect(df_pred, ["month"])
