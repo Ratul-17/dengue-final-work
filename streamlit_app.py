@@ -477,7 +477,7 @@ if submit:
         "Assigned Hospital": assigned_av,
     }
     if rerouted_distance is not None:
-        result["Distance (matrix units)"] = float(rerouted_distance)
+        result["Distance (in Km)"] = float(rerouted_distance)
     result["Note"] = note
     st.json(result)
 
