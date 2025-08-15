@@ -4,15 +4,16 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Union
+from difflib import get_close_matches
 
-# -----------------------------
+# -----------------------------------
 # App config
-# -----------------------------
+# -----------------------------------
 st.set_page_config(page_title="Dengue Patient Allocation", page_icon="🏥", layout="centered")
 st.title("🏥 Dengue Patient Allocation System")
 
-# Fixed list of 18 hospitals (as requested)
-HOSPITALS = [
+# Fixed list of 18 hospitals (UI list)
+HOSPITALS_UI = [
     "Dhaka Medical College Hospital",
     "SSMC & Mitford Hospital",
     "Bangladesh Shishu Hospital & Institute",
@@ -33,16 +34,12 @@ HOSPITALS = [
     "Ad-Din Medical College Hospital",
 ]
 
-# -----------------------------
+# -----------------------------------
 # Utilities
-# -----------------------------
+# -----------------------------------
 def ensure_df(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     if isinstance(df, pd.DataFrame):
-        # strip empty columns
-        df = df.dropna(axis=1, how="all")
-        # strip empty rows
-        df = df.dropna(axis=0, how="all")
-        # normalize column names
+        df = df.dropna(axis=1, how="all").dropna(axis=0, how="all")
         df.columns = [str(c).strip() for c in df.columns]
         return df
     return None
@@ -56,8 +53,8 @@ def autodetect(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
                 return c
     return None
 
-def normalize_hospital(x) -> str:
-    return str(x).strip()
+def normalize_hospital(s) -> str:
+    return str(s).strip()
 
 def parse_date_series(s: pd.Series) -> pd.Series:
     def _one(x):
@@ -70,7 +67,6 @@ def parse_date_series(s: pd.Series) -> pd.Series:
     return s.apply(_one)
 
 def guess_header_row(df_no_header: pd.DataFrame, scan_rows: int = 15) -> int:
-    """Heuristic to guess the header row in an Excel sheet read with header=None."""
     scan = min(len(df_no_header), scan_rows)
     keywords = ["hospital", "facility", "centre", "center", "date", "year", "month", "bed", "icu"]
     best_idx, best_score = 0, -1
@@ -84,12 +80,9 @@ def guess_header_row(df_no_header: pd.DataFrame, scan_rows: int = 15) -> int:
     return int(best_idx)
 
 def read_predictions(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Optional[pd.DataFrame]:
-    """Robust CSV/XLSX loader with sheet + header selection for Excel."""
     name = str(getattr(file_obj_or_path, "name", file_obj_or_path)).lower()
-
-    # CSV path
+    # CSV
     if name.endswith(".csv"):
-        # Try a few strategies to avoid "empty" reads due to delimiter/encoding
         try:
             df = pd.read_csv(file_obj_or_path)
         except Exception:
@@ -101,14 +94,13 @@ def read_predictions(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Opti
                 df = pd.read_csv(file_obj_or_path, encoding="latin1")
         return ensure_df(df)
 
-    # Excel path
+    # Excel: sheet + header chooser
     try:
         xl = pd.ExcelFile(file_obj_or_path)
     except Exception as e:
         st.error(f"Could not open Excel file: {e}")
         return None
 
-    # Choose sheet (default: the largest by non-empty rows)
     sizes = {}
     for s in xl.sheet_names:
         try:
@@ -119,14 +111,10 @@ def read_predictions(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Opti
     default_sheet = sorted(sizes.items(), key=lambda x: x[1], reverse=True)[0][0] if sizes else xl.sheet_names[0]
     sheet = st.sidebar.selectbox("Predictions sheet", xl.sheet_names, index=xl.sheet_names.index(default_sheet))
 
-    # Read without header to guess header row
-    df_no_header = pd.read_excel(xl, sheet_name=sheet, header=None)
-    df_no_header = df_no_header.dropna(how="all", axis=1)
+    df_no_header = pd.read_excel(xl, sheet_name=sheet, header=None).dropna(how="all", axis=1)
     guess = guess_header_row(df_no_header)
     header_row = st.sidebar.number_input("Predictions header row (0-index)", min_value=0,
                                          max_value=max(0, len(df_no_header)-1), value=int(guess), step=1)
-
-    # Final read with header
     df = pd.read_excel(xl, sheet_name=sheet, header=int(header_row))
     return ensure_df(df)
 
@@ -149,7 +137,6 @@ def read_location(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Optiona
 def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
-
     long_from = autodetect(df, ["from", "source", "origin", "hospital_from", "start"])
     long_to   = autodetect(df, ["to", "dest", "destination", "hospital_to", "end"])
     long_dist = autodetect(df, ["distance", "km", "dist"])
@@ -158,18 +145,16 @@ def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
         piv.columns = ["from", "to", "distance"]
         mat = piv.pivot_table(index="from", columns="to", values="distance", aggfunc="min")
         return mat.combine_first(mat.T)
-
     if df.shape[1] > 2:
         df = df.set_index(df.columns[0])
         for c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
         return df.combine_first(df.T)
-
     raise ValueError("Could not interpret Location matrix format. Provide long or wide form.")
 
-# -----------------------------
-# Severity & allocation helpers
-# -----------------------------
+# -----------------------------------
+# Severity & resource
+# -----------------------------------
 def to_bool01(x: int) -> bool:
     return bool(int(x))
 
@@ -185,14 +170,13 @@ def simple_severity(platelet: float, igg: bool, igm: bool, ns1: bool) -> str:
 def required_resource(severity: str) -> str:
     return "ICU" if severity in ("Severe", "Very Severe") else "General Bed"
 
-# -----------------------------
-# Sidebar: File inputs
-# -----------------------------
+# -----------------------------------
+# Sidebar: file inputs
+# -----------------------------------
 st.sidebar.header("📁 Data files")
 pred_file = st.sidebar.file_uploader("Predictions (CSV/XLSX)", type=["csv", "xlsx"])
 loc_file  = st.sidebar.file_uploader("Location matrix (CSV/XLSX)", type=["csv", "xlsx"])
 
-# Allow common filenames when running from repo
 def default_if_exists(name, current):
     return current or (Path(name) if Path(name).exists() else None)
 
@@ -201,9 +185,6 @@ pred_file = default_if_exists("ensemble_predictions_2026_2027_dynamic.xlsx", pre
 loc_file  = default_if_exists("Location matrix.xlsx", loc_file)
 loc_file  = default_if_exists("distance matrix.csv", loc_file)
 
-# -----------------------------
-# Load data (robust)
-# -----------------------------
 if not pred_file:
     st.error("Please upload or include a **Predictions** file (CSV/XLSX).")
     st.stop()
@@ -211,9 +192,12 @@ if not loc_file:
     st.error("Please upload or include a **Location matrix** (CSV/XLSX).")
     st.stop()
 
+# -----------------------------------
+# Load data
+# -----------------------------------
 df_pred = read_predictions(pred_file)
 if df_pred is None or df_pred.empty:
-    st.error("Predictions file could not be read or is empty. Try selecting a different sheet or header row in the sidebar.")
+    st.error("Predictions file could not be read or is empty. Try different sheet/header in sidebar.")
     st.stop()
 
 df_loc = read_location(loc_file)
@@ -225,9 +209,9 @@ with st.expander("🔎 Detected columns (debug)"):
     st.write("**Predictions columns:**", list(df_pred.columns))
     st.write("**Location columns:**", list(df_loc.columns))
 
-# -----------------------------
+# -----------------------------------
 # Map predictions -> availability
-# -----------------------------
+# -----------------------------------
 hospital_col = autodetect(df_pred, ["hospital", "hospital name", "hosp", "facility", "center", "centre", "clinic"])
 if hospital_col is None:
     st.sidebar.warning("Couldn't detect Hospital column — please select one.")
@@ -235,9 +219,9 @@ if hospital_col is None:
 else:
     hospital_col = st.sidebar.selectbox("Select Hospital column", df_pred.columns.tolist(),
                                         index=df_pred.columns.tolist().index(hospital_col))
+
 df_pred["_Hospital"] = df_pred[hospital_col].astype(str).map(normalize_hospital)
 
-# Date OR Year+Month
 date_col  = autodetect(df_pred, ["date"])
 year_col  = autodetect(df_pred, ["year"])
 month_col = autodetect(df_pred, ["month"])
@@ -250,10 +234,9 @@ elif year_col and month_col:
         errors="coerce"
     ).dt.date
 else:
-    st.error("Provide either a **Date** column or both **Year** and **Month** in predictions (use the sheet/header selectors if needed).")
+    st.error("Provide either a **Date** column or both **Year** and **Month** in predictions.")
     st.stop()
 
-# Prefer predicted availability; else Totals − Occupied
 pred_normal_avail_col = autodetect(df_pred, [
     "predicted normal beds available", "normal beds available (pred)", "beds available predicted", "pred beds"
 ])
@@ -274,7 +257,7 @@ elif all([beds_total_col, beds_occ_col, icu_total_col, icu_occ_col]):
     df_pred["_ICUAvail"]  = (pd.to_numeric(df_pred[icu_total_col], errors="coerce") -
                              pd.to_numeric(df_pred[icu_occ_col], errors="coerce")).fillna(0).astype(int)
 else:
-    st.error("Could not find predicted availability columns or fallback (Totals & Occupied). Check header row/sheet and column names.")
+    st.error("Could not find predicted availability columns or fallback (Totals & Occupied).")
     st.stop()
 
 df_pred = df_pred.dropna(subset=["_Date"])
@@ -283,9 +266,9 @@ availability = (
     .set_index(["_Hospital","_Date"]).sort_index()
 )
 
-# -----------------------------
+# -----------------------------------
 # Distance matrix & normalization
-# -----------------------------
+# -----------------------------------
 try:
     dist_mat = build_distance_matrix(df_loc)
     dist_mat.index = dist_mat.index.map(normalize_hospital)
@@ -294,13 +277,34 @@ except Exception as e:
     st.error(f"Location matrix error: {e}")
     st.stop()
 
-# -----------------------------
+# -----------------------------------
+# Fuzzy name matching (critical fix)
+# -----------------------------------
+AVAIL_NAMES = set(availability.index.get_level_values(0).unique().tolist())
+DIST_NAMES  = set(dist_mat.index.astype(str).tolist())
+
+def best_match(name: str, candidates: set, cutoff: float = 0.6) -> Optional[str]:
+    name = str(name).strip()
+    if name in candidates:  # exact
+        return name
+    # try close match
+    m = get_close_matches(name, list(candidates), n=1, cutoff=cutoff)
+    return m[0] if m else None
+
+def to_avail_name(name: str) -> Optional[str]:
+    return best_match(name, AVAIL_NAMES, cutoff=0.55)  # a bit lenient
+
+def to_dist_name(name: str) -> Optional[str]:
+    return best_match(name, DIST_NAMES, cutoff=0.55)
+
+# -----------------------------------
 # Session reservations
-# -----------------------------
+# -----------------------------------
 if "reservations" not in st.session_state:
     st.session_state["reservations"] = {}  # (hospital, date, type) -> count
 
 def get_remaining(hospital: str, date, bed_type: str) -> int:
+    """bed_type: 'ICU' or 'Normal'"""
     key = (hospital, date)
     base = 0
     if key in availability.index:
@@ -312,39 +316,47 @@ def reserve_bed(hospital: str, date, bed_type: str, n: int = 1):
     k = (hospital, date, bed_type)
     st.session_state["reservations"][k] = st.session_state["reservations"].get(k, 0) + n
 
-# -----------------------------
-# Nearest → next-nearest rerouting
-# -----------------------------
-def find_reroute_nearest_first(dist_mat: pd.DataFrame, start_hospital: str, date, bed_key: str):
+# -----------------------------------
+# Nearest → next-nearest rerouting (with fuzzy mapping)
+# -----------------------------------
+def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
     """
-    Walk the distance row for start_hospital from nearest to farthest:
-      - skip self
-      - require (neighbor, date) exists in predictions
-      - require remaining capacity for bed_key ("ICU" or "Normal")
-    Returns: (assigned_hospital, distance_float, error_message_or_None)
+    1) Map the UI-selected name to a distance-matrix row (fuzzy).
+    2) Sort neighbors by distance (skip self).
+    3) For each neighbor, fuzzy-map to availability hospital names and test capacity on the given date.
+    Returns: (assigned_avail_name, distance_float, error_message_or_None)
     """
-    if start_hospital not in dist_mat.index:
+    start_dm = to_dist_name(start_ui_name)
+    if not start_dm:
         return None, None, "Hospital not found in distance matrix"
 
-    row = dist_mat.loc[start_hospital].dropna()
+    row = dist_mat.loc[start_dm].dropna()
     if row.empty:
         return None, None, "No neighbors with distances in matrix"
 
     row = row.sort_values(kind="mergesort")  # stable ordering
+    for neighbor_dm, dist in row.items():
+        # Skip self (match fuzzily to avoid punctuation/case problems)
+        if best_match(neighbor_dm, {start_dm}, cutoff=0.99):
+            continue
 
-    for neighbor, dist in row.items():
-        if str(neighbor).strip() == str(start_hospital).strip():
+        # Map neighbor to availability naming
+        neighbor_av = to_avail_name(neighbor_dm)
+        if not neighbor_av:
+            continue  # can't match neighbor to predictions
+
+        # Must exist on that date and have capacity
+        if (neighbor_av, date) not in availability.index:
             continue
-        if (neighbor, date) not in availability.index:
-            continue
-        if get_remaining(neighbor, date, bed_key) > 0:
-            return str(neighbor), float(dist), None
+        if get_remaining(neighbor_av, date, bed_key) > 0:
+            return neighbor_av, float(dist), None
 
     return None, None, "No hospitals with vacancy found for selected date and resource"
 
-# -----------------------------
-# UI – Patient inputs (exactly as requested)
-# -----------------------------
+# -----------------------------------
+# UI – Patient inputs (exact spec)
+# -----------------------------------
+# Global date range from predictions
 all_dates = sorted(list(set([d for _, d in availability.index])))
 if not all_dates:
     st.error("No dates found in predictions after processing.")
@@ -353,8 +365,8 @@ if not all_dates:
 with st.form("allocation_form"):
     st.subheader("🔍 Patient Information")
 
-    hospital = st.selectbox("Hospital Name", HOSPITALS)
-    date_input = st.date_input("Date", value=max(all_dates), min_value=min(all_dates), max_value=max(all_dates))
+    hospital_ui = st.selectbox("Hospital Name", HOSPITALS_UI)
+    date_input  = st.date_input("Date", value=max(all_dates), min_value=min(all_dates), max_value=max(all_dates))
 
     colA, colB = st.columns(2)
     with colA:
@@ -369,43 +381,50 @@ with st.form("allocation_form"):
     submit = st.form_submit_button("🚑 Allocate")
 
 if submit:
+    # Convert to booleans
     igg = bool(int(igg01))
     igm = bool(int(ign01))  # igN treated as IgM
     ns1 = bool(int(ns101))
 
+    # Severity → resource
     severity = simple_severity(platelet=float(platelet), igg=igg, igm=igm, ns1=ns1)
-    resource = required_resource(severity)
-    bed_key = "ICU" if resource == "ICU" else "Normal"
+    resource = required_resource(severity)          # "ICU" or "General Bed"
+    bed_key  = "ICU" if resource == "ICU" else "Normal"
 
-    remaining_here = get_remaining(hospital, date_input, bed_key)
-    assigned_hospital = hospital
+    # Map UI hospital to availability naming for local check
+    start_av = to_avail_name(hospital_ui) or hospital_ui
+    remaining_here = get_remaining(start_av, date_input, bed_key)
+
+    assigned_av_name = None
     rerouted_distance = None
 
-    if remaining_here > 0 and (hospital, date_input) in availability.index:
+    if remaining_here > 0 and (start_av, date_input) in availability.index:
+        assigned_av_name = start_av
         note = "Assigned at selected hospital"
     else:
-        assigned_hospital, rerouted_distance, err = find_reroute_nearest_first(
-            dist_mat=dist_mat,
-            start_hospital=hospital,
+        assigned_av_name, rerouted_distance, err = find_reroute_nearest_first(
+            start_ui_name=hospital_ui,
             date=date_input,
             bed_key=bed_key,
         )
-        if assigned_hospital:
+        if assigned_av_name:
             note = f"Rerouted to nearest hospital with {resource}"
         else:
             note = err or "No hospitals with vacancy found for selected date and resource"
+            # fall back to showing the UI hospital as assigned for display purposes
+            assigned_av_name = start_av
 
-    if assigned_hospital and "No hospitals" not in note:
-        reserve_bed(assigned_hospital, date_input, bed_key, n=1)
+    if assigned_av_name and "No hospitals" not in note:
+        reserve_bed(assigned_av_name, date_input, bed_key, n=1)
 
     st.subheader("📋 Allocation Result")
     result = {
         "Date": pd.to_datetime(date_input).strftime("%Y-%m-%d"),
         "Severity": severity,
         "Resource Needed": resource,
-        "Hospital Tried": hospital,
-        "Available at Current Hospital": "Yes" if assigned_hospital == hospital and note.startswith("Assigned") else "No",
-        "Assigned Hospital": assigned_hospital if assigned_hospital else hospital,
+        "Hospital Tried": hospital_ui,
+        "Available at Current Hospital": "Yes" if (assigned_av_name == start_av and note.startswith("Assigned")) else "No",
+        "Assigned Hospital": assigned_av_name,
     }
     if rerouted_distance is not None:
         result["Distance (matrix units)"] = float(rerouted_distance)
