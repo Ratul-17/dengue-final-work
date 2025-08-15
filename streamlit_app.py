@@ -7,7 +7,6 @@ from difflib import get_close_matches
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
-import matplotlib.pyplot as plt
 
 # ===============================
 # App config
@@ -176,7 +175,7 @@ def excel_based_severity(platelet, age, NS1, IgM, IgG):
     age_factor = 0.5 if (age < 15 or age > 60) else 0
     I = min(4, NS1 + IgM + IgG * 0.5 + age_factor + H)
     if I < 1: verdict = "Mild"
-    elif I < 2.5: verdict = "Moderate"
+    elif I < 2: verdict = "Moderate"
     elif I < 3: verdict = "Severe"
     else: verdict = "Very Severe"
     return verdict, I
@@ -222,11 +221,9 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
     if date_col:
         df["_Date"] = pd.to_datetime(df[date_col], errors="coerce")
     elif year_col and month_col:
-        if day_col:
-            df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
-        else:
-            df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" +
-                                         df[month_col].astype(int).astype(str) + "-01", errors="coerce")
+        if day_col: df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
+        else: df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" +
+                                           df[month_col].astype(int).astype(str) + "-01", errors="coerce")
     else:
         raise ValueError("Provide either a Date column or (Year & Month) in predictions.")
     df = df.dropna(subset=["_Date"]); df["_Date"] = df["_Date"].dt.normalize()
@@ -328,67 +325,6 @@ def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
         if rem and rem > 0:
             return neighbor_av, float(dist), None, checks
     return None, None, "No hospitals with vacancy found", checks
-
-# ===============================
-# Mini Map (MDS from distance matrix)
-# ===============================
-def mds_embed_2d(distance_df: pd.DataFrame) -> pd.DataFrame:
-    """Classical MDS (Torgerson). Returns DataFrame with ['x','y'] indexed by hospital names."""
-    # ensure square, symmetric, numeric
-    D = distance_df.copy().astype(float)
-    # align rows/cols
-    names = sorted(set(D.index.astype(str)) | set(D.columns.astype(str)))
-    D = D.reindex(index=names, columns=names)
-    # fill self-distances and symmetrize
-    np.fill_diagonal(D.values, 0.0)
-    D = (D + D.T) / 2.0
-    # replace inf/nan
-    maxd = np.nanmax(D.values[np.isfinite(D.values)]) if np.isfinite(D.values).any() else 1.0
-    D = D.replace([np.inf, -np.inf], np.nan).fillna(maxd * 1.1)
-
-    # classical MDS: B = -1/2 * J * D^2 * J
-    n = D.shape[0]
-    J = np.eye(n) - np.ones((n, n)) / n
-    D2 = D.values ** 2
-    B = -0.5 * J.dot(D2).dot(J)
-
-    # eigen-decomposition
-    eigvals, eigvecs = np.linalg.eigh(B)  # ascending
-    idx = np.argsort(eigvals)[::-1]  # descending
-    eigvals = eigvals[idx]
-    eigvecs = eigvecs[:, idx]
-
-    # take top-2 positive
-    pos = eigvals[:2].clip(min=0)
-    # avoid sqrt(negative)
-    L = np.diag(np.sqrt(pos))
-    V = eigvecs[:, :2]
-    X = V.dot(L)
-    coords = pd.DataFrame(X, index=names, columns=["x","y"])
-    return coords
-
-def plot_network(coords: pd.DataFrame, tried_name: str, assigned_name: Optional[str]):
-    fig, ax = plt.subplots(figsize=(7.5, 6))
-    # base scatter
-    ax.scatter(coords["x"], coords["y"], s=80, alpha=0.8, edgecolor="#ffffff", linewidth=0.8, zorder=2)
-    # labels
-    for name, row in coords.iterrows():
-        ax.text(row["x"], row["y"]+0.02, s=name, fontsize=8, ha="center", va="bottom", color="#cbd5e1")
-    # highlight tried and assigned
-    if tried_name in coords.index:
-        ax.scatter(coords.loc[tried_name,"x"], coords.loc[tried_name,"y"], s=150, color="#f59e0b", zorder=3)
-    if assigned_name and assigned_name in coords.index:
-        ax.scatter(coords.loc[assigned_name,"x"], coords.loc[assigned_name,"y"], s=150, color="#10b981", zorder=3)
-        # draw connection
-        x1,y1 = coords.loc[tried_name,["x","y"]].values
-        x2,y2 = coords.loc[assigned_name,["x","y"]].values
-        ax.plot([x1,x2],[y1,y2], linestyle="--", linewidth=2, color="#38bdf8", alpha=0.9, zorder=1)
-    ax.set_xticks([]); ax.set_yticks([])
-    ax.set_title("Hospital Network (approximate layout from distances)", color="#e5e7eb")
-    fig.patch.set_alpha(0)  # transparent bg
-    ax.set_facecolor("#0b1220")
-    for spine in ax.spines.values(): spine.set_visible(False)
-    return fig
 
 # ===============================
 # UI – Patient inputs
@@ -523,20 +459,3 @@ if submit:
             st.dataframe(dbg, use_container_width=True)
         else:
             st.write("No neighbor checks — assigned at selected hospital.")
-
-    # ===============================
-    # Mini map (network embedding)
-    # ===============================
-    st.subheader("🗺️ Hospital Network (proximity map)")
-    try:
-        coords = mds_embed_2d(dist_mat)
-        # map names from distance matrix to availability where possible
-        tried_av = UI_TO_AV.get(hospital_ui) or hospital_ui
-        assigned_av_name = assigned_av
-
-        fig = plot_network(coords, tried_name=UI_TO_DM.get(hospital_ui, hospital_ui),
-                           assigned_name=next((k for k,v in DM_TO_AV.items() if v == assigned_av_name), None) if assigned_av_name else None)
-        st.pyplot(fig, use_container_width=True)
-        st.caption("Note: This is an approximate 2D layout computed from the pairwise distances; it is *not* a real geographic map.")
-    except Exception as e:
-        st.warning(f"Could not render network map: {e}")
