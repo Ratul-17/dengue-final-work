@@ -12,6 +12,40 @@ from typing import Optional, List
 # ===============================
 st.set_page_config(page_title="Dengue Patient Allocation", page_icon="🏥", layout="centered")
 st.title("🏥 Integrated Hospital Dengue Patient Allocation System")
+# ---------- UI helpers & styles ----------
+st.markdown("""
+<style>
+.card{border:1px solid #e5e7eb;border-radius:16px;padding:16px;background:#ffffff;
+box-shadow:0 4px 24px rgba(2,6,23,.06); margin:8px 0}
+.kpi{font-size:2rem;font-weight:800;margin:0; line-height:1.1}
+.kpi-label{color:#6b7280;margin:0}
+.badge{display:inline-block;padding:4px 10px;border-radius:999px;font-weight:700;
+font-size:.85rem;color:#fff;margin-left:8px}
+.badge.green{background:#16a34a}
+.badge.red{background:#dc2626}
+.badge.amber{background:#f59e0b}
+.badge.blue{background:#2563eb}
+.pill{display:inline-flex;align-items:center;gap:.5rem;padding:6px 10px;border-radius:999px;
+background:#f1f5f9;color:#0f172a;font-weight:600}
+.arrow{font-size:1.25rem;opacity:.8;padding:0 6px}
+.line{height:1px;background:#e5e7eb;margin:8px 0 16px 0}
+</style>
+""", unsafe_allow_html=True)
+
+def severity_badge(sev:str)->str:
+    color = {"Mild":"green","Moderate":"amber","Severe":"red","Very Severe":"red"}.get(sev,"blue")
+    return f'<span class="badge {color}">{sev}</span>'
+
+def resource_badge(res:str)->str:
+    color = "red" if res=="ICU" else "blue"
+    return f'<span class="badge {color}">{res}</span>'
+
+def availability_badge(txt:str)->str:
+    color = "green" if txt=="Yes" else ("amber" if "No vacancy" in txt else "blue")
+    return f'<span class="badge {color}">{txt}</span>'
+
+def sev_percent(sev:str)->int:
+    return {"Mild":25,"Moderate":50,"Severe":75,"Very Severe":100}.get(sev,50)
 
 # ===============================
 # Fixed hospital list
@@ -372,23 +406,67 @@ if submit:
     if assigned_av:
         reserve_bed(assigned_av, date_input, bed_key, 1)
 
-    st.subheader("📋 Allocation Result")
-    st.json({
-        "Date": str(pd.to_datetime(date_input).date()),
-        "Time Granularity": granularity,
-        "Interpolation": interp_method if granularity in ("Daily","Weekly") else "N/A",
-        "Severity": severity,
-        "Severity Score": round(float(score), 2),
-        "Resource Needed": resource,
-        "Hospital Tried": hospital_ui,
-        "Available at Current Hospital": available_status,
-        "Assigned Hospital": assigned_av,
-        "Distance (km)": float(rerouted_distance) if rerouted_distance is not None else None,
-        "Note": note
-    })
+    # ---------- Fancy result UI ----------
+st.subheader("📋 Allocation Result")
 
-    with st.expander("🧪 Debug: Nearest Hospitals Checked"):
-        if debug_checks:
-            st.dataframe(pd.DataFrame(debug_checks))
-        else:
-            st.write("No neighbor checks — patient assigned at selected hospital.")
+# KPIs row
+k1, k2, k3, k4 = st.columns([1.2,1,1,1])
+with k1:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown(f'<p class="kpi">{round(float(score),2)}</p><p class="kpi-label">Severity Score {severity_badge(severity)}</p>', unsafe_allow_html=True)
+    st.progress(sev_percent(severity))
+    st.markdown('</div>', unsafe_allow_html=True)
+with k2:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown(f'<p class="kpi">{resource}</p><p class="kpi-label">Resource Needed</p>', unsafe_allow_html=True)
+    st.markdown(f'{resource_badge(resource)}', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+with k3:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    tried = hospital_ui
+    st.markdown(f'<p class="kpi">{pd.to_datetime(date_input).date()}</p><p class="kpi-label">Date</p>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+with k4:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    dist_txt = f"{float(rerouted_distance):.1f} km" if rerouted_distance is not None else "—"
+    st.markdown(f'<p class="kpi">{dist_txt}</p><p class="kpi-label">Travel Distance</p>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Status + assignment card
+st.markdown('<div class="card">', unsafe_allow_html=True)
+left, right = st.columns([1.2,1])
+with left:
+    st.markdown(f"**Hospital Tried:** {tried}  {availability_badge(available_status)}", unsafe_allow_html=True)
+    st.markdown('<div class="line"></div>', unsafe_allow_html=True)
+    if assigned_av and assigned_av != (UI_TO_AV.get(hospital_ui) or hospital_ui):
+        st.markdown(
+            f'<span class="pill">{tried}</span>'
+            f'<span class="arrow">➡️</span>'
+            f'<span class="pill">{assigned_av}</span>',
+            unsafe_allow_html=True
+        )
+        st.caption(f"Rerouted to **{assigned_av}**")
+    else:
+        st.success("Assigned at selected hospital") if available_status=="Yes" else st.warning("No vacancy available here — searching nearest options…")
+with right:
+    st.markdown("**Summary**")
+    st.write({
+        "Severity": severity,
+        "Resource": resource,
+        "Hospital Tried": tried,
+        "Assigned Hospital": assigned_av,
+        "Distance (km)": float(rerouted_distance) if rerouted_distance is not None else None
+    })
+st.markdown('</div>', unsafe_allow_html=True)
+
+# Debug table of nearest checks (prettified)
+with st.expander("🧪 Debug: Nearest Hospitals Checked"):
+    if debug_checks:
+        dbg = pd.DataFrame(debug_checks)
+        # Put assigned at the top if present
+        if assigned_av:
+            dbg["Allocated"] = dbg["Neighbor Hospital"].eq(assigned_av)
+            dbg = dbg.sort_values(["Allocated","Remaining Beds/ICU"], ascending=[False,False])
+        st.dataframe(dbg, use_container_width=True)
+    else:
+        st.write("No neighbor checks — patient assigned at selected hospital.")
