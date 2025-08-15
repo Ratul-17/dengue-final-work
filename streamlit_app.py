@@ -11,7 +11,7 @@ from typing import Optional, List, Union
 # App config
 # ===============================
 st.set_page_config(page_title="Dengue Patient Allocation", page_icon="🏥", layout="centered")
-st.title("🏥 Dengue Patient Allocation System")
+st.title("🏥 Integrated Hospital Dengue Patient Allocation System")
 
 # Fixed UI list (18 hospitals)
 HOSPITALS_UI = [
