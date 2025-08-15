@@ -77,10 +77,10 @@ def guess_header_row(df_no_header: pd.DataFrame, scan_rows: int = 15) -> int:
             best_score, best_idx = score, i
     return int(best_idx)
 
+# ---------- Predictions loader (robust CSV/XLSX) ----------
 def read_predictions(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Optional[pd.DataFrame]:
     name = str(getattr(file_obj_or_path, "name", file_obj_or_path)).lower()
     if name.endswith(".csv"):
-        # try a few strategies (delimiter/encoding)
         try:
             df = pd.read_csv(file_obj_or_path)
         except Exception:
@@ -92,7 +92,6 @@ def read_predictions(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Opti
                 df = pd.read_csv(file_obj_or_path, encoding="latin1")
         return ensure_df(df)
 
-    # Excel: choose sheet + header
     xl = pd.ExcelFile(file_obj_or_path)
     sizes = {}
     for s in xl.sheet_names:
@@ -111,27 +110,45 @@ def read_predictions(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Opti
     df = pd.read_excel(xl, sheet_name=sheet, header=int(header_row))
     return ensure_df(df)
 
+# ---------- Location loader (now with XLSX sheet + header picker) ----------
 def read_location(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Optional[pd.DataFrame]:
     name = str(getattr(file_obj_or_path, "name", file_obj_or_path)).lower()
-    try:
-        if name.endswith(".csv"):
+    if name.endswith(".csv"):
+        try:
+            df = pd.read_csv(file_obj_or_path)
+        except Exception:
             try:
-                df = pd.read_csv(file_obj_or_path)
-            except Exception:
                 if hasattr(file_obj_or_path, "seek"): file_obj_or_path.seek(0)
                 df = pd.read_csv(file_obj_or_path, sep=None, engine="python")
-        else:
-            df = pd.read_excel(file_obj_or_path)
+            except Exception:
+                if hasattr(file_obj_or_path, "seek"): file_obj_or_path.seek(0)
+                df = pd.read_csv(file_obj_or_path, encoding="latin1")
         return ensure_df(df)
-    except Exception as e:
-        st.error(f"Failed to read Location matrix: {e}")
-        return None
+
+    # Excel: choose sheet + header row for location matrix too
+    xl = pd.ExcelFile(file_obj_or_path)
+    sizes = {}
+    for s in xl.sheet_names:
+        try:
+            df_sample = pd.read_excel(xl, sheet_name=s, nrows=25, header=None)
+            sizes[s] = int(df_sample.dropna(how="all").shape[0])
+        except Exception:
+            sizes[s] = 0
+    default_sheet = sorted(sizes.items(), key=lambda x: x[1], reverse=True)[0][0] if sizes else xl.sheet_names[0]
+    sheet = st.sidebar.selectbox("Location sheet", xl.sheet_names, index=xl.sheet_names.index(default_sheet))
+
+    df_no_header = pd.read_excel(xl, sheet_name=sheet, header=None).dropna(how="all", axis=1)
+    guess = guess_header_row(df_no_header)
+    header_row = st.sidebar.number_input("Location header row (0-index)", min_value=0,
+                                         max_value=max(0, len(df_no_header)-1), value=int(guess), step=1)
+    df = pd.read_excel(xl, sheet_name=sheet, header=int(header_row))
+    return ensure_df(df)
 
 def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
-    # long format
+    # Long format
     long_from = autodetect(df, ["from", "source", "origin", "hospital_from", "start"])
     long_to   = autodetect(df, ["to", "dest", "destination", "hospital_to", "end"])
     long_dist = autodetect(df, ["distance", "km", "dist"])
@@ -141,7 +158,7 @@ def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
         mat = piv.pivot_table(index="from", columns="to", values="distance", aggfunc="min")
         return mat.combine_first(mat.T)
 
-    # wide format
+    # Wide format
     if df.shape[1] > 2:
         df = df.set_index(df.columns[0])
         for c in df.columns:
@@ -150,51 +167,44 @@ def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
 
     raise ValueError("Could not interpret Location matrix format. Provide long or wide form.")
 
-# ===============================
-# Name normalization & matching
-# ===============================
+# ---------- Name normalization / fuzzy matching ----------
 STOPWORDS = {"hospital","medical","college","institute","university","center","centre","clinic","and"}
-
 def norm_key(s: str) -> str:
-    """Normalize a hospital name for matching across files."""
     s = str(s).lower().strip()
     s = s.replace("&", " and ")
     s = re.sub(r"[^a-z0-9\s]", " ", s)
     tokens = [t for t in s.split() if t and t not in STOPWORDS]
-    return "".join(tokens)  # compact to a single key
+    return "".join(tokens)
 
 def build_name_maps(availability, dist_mat, ui_list):
     avail_names = sorted(set(availability.index.get_level_values(0).tolist()))
-    dist_names  = sorted(set(map(str, dist_mat.index.tolist())))
-    ui_names    = ui_list
+    dm_names = sorted(set(map(str, dist_mat.index.tolist())) | set(map(str, dist_mat.columns.tolist())))
+    ui_names = list(ui_list)
 
     avail_by_key = {norm_key(a): a for a in avail_names}
-    dist_by_key  = {norm_key(d): d for d in dist_names}
+    dm_by_key    = {norm_key(d): d for d in dm_names}
     ui_by_key    = {norm_key(u): u for u in ui_names}
 
-    # map dist -> avail (exact key, then fuzzy on keys)
+    # distance -> availability
     dm_to_av = {}
-    for d in dist_names:
+    for d in dm_names:
         kd = norm_key(d)
         if kd in avail_by_key:
             dm_to_av[d] = avail_by_key[kd]
             continue
-        # fuzzy on keys
-        candidates = list(avail_by_key.keys())
-        m = get_close_matches(kd, candidates, n=1, cutoff=0.6)
+        m = get_close_matches(kd, list(avail_by_key.keys()), n=1, cutoff=0.6)
         dm_to_av[d] = avail_by_key[m[0]] if m else None
 
-    # map ui -> dist and ui -> avail
+    # ui -> dist / avail
     ui_to_dm, ui_to_av = {}, {}
     for u in ui_names:
         ku = norm_key(u)
-        # to dist
-        if ku in dist_by_key:
-            ui_to_dm[u] = dist_by_key[ku]
+        if ku in dm_by_key:
+            ui_to_dm[u] = dm_by_key[ku]
         else:
-            m = get_close_matches(ku, list(dist_by_key.keys()), n=1, cutoff=0.6)
-            ui_to_dm[u] = dist_by_key[m[0]] if m else None
-        # to avail
+            m = get_close_matches(ku, list(dm_by_key.keys()), n=1, cutoff=0.6)
+            ui_to_dm[u] = dm_by_key[m[0]] if m else None
+
         if ku in avail_by_key:
             ui_to_av[u] = avail_by_key[ku]
         else:
@@ -203,9 +213,7 @@ def build_name_maps(availability, dist_mat, ui_list):
 
     return dm_to_av, ui_to_dm, ui_to_av
 
-# ===============================
-# Severity & resource
-# ===============================
+# ---------- Severity & resource ----------
 def to_bool01(x: int) -> bool:
     return bool(int(x))
 
@@ -263,7 +271,7 @@ with st.expander("🔎 Detected columns (debug)"):
 # ===============================
 # Map predictions -> availability
 # ===============================
-hospital_col = autodetect(df_pred, ["hospital", "hospital name", "hosp", "facility", "center", "centre", "clinic"])
+hospital_col = autodetect(df_pred, ["hospital","hospital name","hosp","facility","center","centre","clinic"])
 if hospital_col is None:
     st.sidebar.warning("Couldn't detect Hospital column — select it.")
     hospital_col = st.sidebar.selectbox("Select Hospital column", df_pred.columns.tolist())
@@ -275,6 +283,7 @@ df_pred["_Hospital"] = df_pred[hospital_col].astype(str).str.strip()
 date_col  = autodetect(df_pred, ["date"])
 year_col  = autodetect(df_pred, ["year"])
 month_col = autodetect(df_pred, ["month"])
+
 if date_col:
     df_pred["_Date"] = parse_date_series(df_pred[date_col])
 elif year_col and month_col:
@@ -316,14 +325,14 @@ availability = (
 )
 
 # ===============================
-# Build / normalize distance matrix
+# Build distance matrix
 # ===============================
 dist_mat = build_distance_matrix(df_loc)
 dist_mat.index = dist_mat.index.map(lambda x: str(x).strip())
 dist_mat.columns = dist_mat.columns.map(lambda x: str(x).strip())
 
 # ===============================
-# Name maps (critical)
+# Name maps (UI ↔ distance ↔ predictions)
 # ===============================
 DM_TO_AV, UI_TO_DM, UI_TO_AV = build_name_maps(availability, dist_mat, HOSPITALS_UI)
 
@@ -351,39 +360,50 @@ def reserve_bed(hospital: str, date, bed_type: str, n: int = 1):
 def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
     """
     Walk neighbors by distance:
-      - map UI name -> DM row (UI_TO_DM)
-      - iterate sorted neighbors
-      - neighbor DM name -> availability name (DM_TO_AV)
-      - require (hospital,date) in availability AND capacity > 0
+      1) map UI name -> distance-matrix row (fuzzy)
+      2) for each neighbor (sorted asc by distance):
+         - neighbor DM name -> availability name (fuzzy)
+         - require (hospital, date) in predictions
+         - require remaining capacity for bed_key
+    Returns: (assigned_av_name, distance_float, error_message_or_None, debug_checks)
     """
-    checks = []  # for debug panel
+    checks = []
 
     start_dm = UI_TO_DM.get(start_ui_name)
     if not start_dm or start_dm not in dist_mat.index:
         return None, None, "Hospital not found in distance matrix", checks
 
-    row = dist_mat.loc[start_dm].dropna()
+    row = dist_mat.loc[start_dm].astype(float).replace([np.inf, -np.inf], np.nan).dropna()
     if row.empty:
         return None, None, "No neighbors with distances in matrix", checks
 
-    row = row.sort_values(kind="mergesort")  # stable ordering
+    # sort nearest → farthest
+    row = row.sort_values(kind="mergesort")
+
     for neighbor_dm, dist in row.items():
-        if neighbor_dm == start_dm:
+        if str(neighbor_dm).strip() == str(start_dm).strip():
             continue  # skip self
         neighbor_av = DM_TO_AV.get(neighbor_dm)
-        # Track what we tried
+        rem = None
+        has_rows = False
+        if neighbor_av is not None:
+            has_rows = ((neighbor_av, date) in availability.index)
+            if has_rows:
+                rem = get_remaining(neighbor_av, date, bed_key)
+
         checks.append({
             "neighbor_dm": neighbor_dm,
             "mapped_av": neighbor_av,
-            "distance": float(dist) if pd.notna(dist) else None,
-            "date_has_rows": bool(neighbor_av and (neighbor_av, date) in availability.index),
-            "remaining": (get_remaining(neighbor_av, date, bed_key) if neighbor_av and (neighbor_av, date) in availability.index else None)
+            "distance": float(dist),
+            "date_has_rows": bool(has_rows),
+            "remaining": int(rem) if rem is not None else None
         })
-        if not neighbor_av:
+
+        if neighbor_av is None:
             continue
-        if (neighbor_av, date) not in availability.index:
+        if not has_rows:
             continue
-        if get_remaining(neighbor_av, date, bed_key) > 0:
+        if rem and rem > 0:
             return neighbor_av, float(dist), None, checks
 
     return None, None, "No hospitals with vacancy found for selected date and resource", checks
@@ -400,6 +420,7 @@ with st.form("allocation_form"):
     st.subheader("🔍 Patient Information")
     hospital_ui = st.selectbox("Hospital Name", HOSPITALS_UI)
     date_input  = st.date_input("Date", value=max(all_dates), min_value=min(all_dates), max_value=max(all_dates))
+
     colA, colB = st.columns(2)
     with colA:
         age = st.number_input("Patient Age (years)", min_value=0, max_value=120, value=25)
@@ -409,6 +430,7 @@ with st.form("allocation_form"):
         igg01 = st.selectbox("IgG (0=Negative, 1=Positive)", [0, 1], index=0)
         ign01 = st.selectbox("igN (treated as IgM) (0=Negative, 1=Positive)", [0, 1], index=0)
         ns101 = st.selectbox("NS1 (0=Negative, 1=Positive)", [0, 1], index=0)
+
     submit = st.form_submit_button("🚑 Allocate")
 
 if submit:
@@ -420,7 +442,7 @@ if submit:
     resource = required_resource(severity)      # "ICU" or "General Bed"
     bed_key  = "ICU" if resource == "ICU" else "Normal"
 
-    start_av = UI_TO_AV.get(hospital_ui) or hospital_ui
+    start_av = (UI_TO_AV.get(hospital_ui) or hospital_ui)
     remaining_here = get_remaining(start_av, date_input, bed_key)
 
     assigned_av = None
@@ -440,7 +462,7 @@ if submit:
             note = f"Rerouted to nearest hospital with {resource}"
         else:
             note = err or "No hospitals with vacancy found for selected date and resource"
-            assigned_av = start_av  # keep something meaningful in output
+            assigned_av = start_av
 
     if assigned_av and "No hospitals" not in note:
         reserve_bed(assigned_av, date_input, bed_key, n=1)
@@ -463,4 +485,4 @@ if submit:
         if debug_checks:
             st.dataframe(pd.DataFrame(debug_checks))
         else:
-            st.write("No neighbor checks (likely assigned at selected hospital).")
+            st.write("No neighbor checks (assigned at selected hospital).")
