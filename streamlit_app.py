@@ -459,7 +459,7 @@ if submit:
             bed_key=bed_key,
         )
         if assigned_av:
-            note = f"Rerouted to nearest hospital with {resource}"
+            note = f"Allocated to nearest hospital with {resource}"
         else:
             note = err or "No hospitals with vacancy found for selected date and resource"
             assigned_av = start_av
