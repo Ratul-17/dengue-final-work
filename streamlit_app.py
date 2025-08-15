@@ -5,7 +5,7 @@ import re
 from difflib import get_close_matches
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Union
+from typing import Optional, List
 
 # ===============================
 # App config
@@ -13,7 +13,9 @@ from typing import Optional, List, Union
 st.set_page_config(page_title="Dengue Patient Allocation", page_icon="🏥", layout="centered")
 st.title("🏥 Integrated Hospital Dengue Patient Allocation System")
 
-# Fixed UI list (18 hospitals)
+# ===============================
+# Fixed hospital list
+# ===============================
 HOSPITALS_UI = [
     "Dhaka Medical College Hospital",
     "SSMC & Mitford Hospital",
@@ -36,7 +38,7 @@ HOSPITALS_UI = [
 ]
 
 # ===============================
-# Utilities
+# Utility functions
 # ===============================
 def ensure_df(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     if isinstance(df, pd.DataFrame):
@@ -64,85 +66,6 @@ def parse_date_series(s: pd.Series) -> pd.Series:
             return pd.NaT
     return s.apply(_one)
 
-def guess_header_row(df_no_header: pd.DataFrame, scan_rows: int = 15) -> int:
-    scan = min(len(df_no_header), scan_rows)
-    keywords = ["hospital", "facility", "centre", "center", "date", "year", "month", "bed", "icu"]
-    best_idx, best_score = 0, -1
-    for i in range(scan):
-        row = df_no_header.iloc[i].astype(str).str.lower()
-        score = row.notna().sum()
-        if any(any(kw in str(val) for val in row) for kw in keywords):
-            score += 10
-        if score > best_score:
-            best_score, best_idx = score, i
-    return int(best_idx)
-
-# ---------- Predictions loader ----------
-def read_predictions(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Optional[pd.DataFrame]:
-    name = str(getattr(file_obj_or_path, "name", file_obj_or_path)).lower()
-    if name.endswith(".csv"):
-        try:
-            df = pd.read_csv(file_obj_or_path)
-        except Exception:
-            try:
-                if hasattr(file_obj_or_path, "seek"): file_obj_or_path.seek(0)
-                df = pd.read_csv(file_obj_or_path, sep=None, engine="python")
-            except Exception:
-                if hasattr(file_obj_or_path, "seek"): file_obj_or_path.seek(0)
-                df = pd.read_csv(file_obj_or_path, encoding="latin1")
-        return ensure_df(df)
-
-    xl = pd.ExcelFile(file_obj_or_path)
-    sizes = {}
-    for s in xl.sheet_names:
-        try:
-            df_sample = pd.read_excel(xl, sheet_name=s, nrows=25, header=None)
-            sizes[s] = int(df_sample.dropna(how="all").shape[0])
-        except Exception:
-            sizes[s] = 0
-    default_sheet = sorted(sizes.items(), key=lambda x: x[1], reverse=True)[0][0] if sizes else xl.sheet_names[0]
-    sheet = st.sidebar.selectbox("Predictions sheet", xl.sheet_names, index=xl.sheet_names.index(default_sheet))
-
-    df_no_header = pd.read_excel(xl, sheet_name=sheet, header=None).dropna(how="all", axis=1)
-    guess = guess_header_row(df_no_header)
-    header_row = st.sidebar.number_input("Predictions header row (0-index)", min_value=0,
-                                         max_value=max(0, len(df_no_header)-1), value=int(guess), step=1)
-    df = pd.read_excel(xl, sheet_name=sheet, header=int(header_row))
-    return ensure_df(df)
-
-# ---------- Location loader ----------
-def read_location(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Optional[pd.DataFrame]:
-    name = str(getattr(file_obj_or_path, "name", file_obj_or_path)).lower()
-    if name.endswith(".csv"):
-        try:
-            df = pd.read_csv(file_obj_or_path)
-        except Exception:
-            try:
-                if hasattr(file_obj_or_path, "seek"): file_obj_or_path.seek(0)
-                df = pd.read_csv(file_obj_or_path, sep=None, engine="python")
-            except Exception:
-                if hasattr(file_obj_or_path, "seek"): file_obj_or_path.seek(0)
-                df = pd.read_csv(file_obj_or_path, encoding="latin1")
-        return ensure_df(df)
-
-    xl = pd.ExcelFile(file_obj_or_path)
-    sizes = {}
-    for s in xl.sheet_names:
-        try:
-            df_sample = pd.read_excel(xl, sheet_name=s, nrows=25, header=None)
-            sizes[s] = int(df_sample.dropna(how="all").shape[0])
-        except Exception:
-            sizes[s] = 0
-    default_sheet = sorted(sizes.items(), key=lambda x: x[1], reverse=True)[0][0] if sizes else xl.sheet_names[0]
-    sheet = st.sidebar.selectbox("Location sheet", xl.sheet_names, index=xl.sheet_names.index(default_sheet))
-
-    df_no_header = pd.read_excel(xl, sheet_name=sheet, header=None).dropna(how="all", axis=1)
-    guess = guess_header_row(df_no_header)
-    header_row = st.sidebar.number_input("Location header row (0-index)", min_value=0,
-                                         max_value=max(0, len(df_no_header)-1), value=int(guess), step=1)
-    df = pd.read_excel(xl, sheet_name=sheet, header=int(header_row))
-    return ensure_df(df)
-
 def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
@@ -153,7 +76,6 @@ def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
         return df.combine_first(df.T)
     raise ValueError("Could not interpret Location matrix format.")
 
-# ---------- Name normalization ----------
 STOPWORDS = {"hospital","medical","college","institute","university","center","centre","clinic","and"}
 def norm_key(s: str) -> str:
     s = str(s).lower().strip()
@@ -169,16 +91,15 @@ def build_name_maps(availability, dist_mat, ui_list):
 
     avail_by_key = {norm_key(a): a for a in avail_names}
     dm_by_key    = {norm_key(d): d for d in dm_names}
-    ui_by_key    = {norm_key(u): u for u in ui_names}
 
     dm_to_av = {}
     for d in dm_names:
         kd = norm_key(d)
         if kd in avail_by_key:
             dm_to_av[d] = avail_by_key[kd]
-            continue
-        m = get_close_matches(kd, list(avail_by_key.keys()), n=1, cutoff=0.6)
-        dm_to_av[d] = avail_by_key[m[0]] if m else None
+        else:
+            m = get_close_matches(kd, list(avail_by_key.keys()), n=1, cutoff=0.6)
+            dm_to_av[d] = avail_by_key[m[0]] if m else None
 
     ui_to_dm, ui_to_av = {}, {}
     for u in ui_names:
@@ -197,8 +118,11 @@ def build_name_maps(availability, dist_mat, ui_list):
 
     return dm_to_av, ui_to_dm, ui_to_av
 
-# ---------- Excel-based severity ----------
-def excel_based_severity(platelet, age, C, E, D):
+# ===============================
+# Excel-based severity logic (using NS1, IgM, IgG)
+# ===============================
+def excel_based_severity(platelet, age, NS1, IgM, IgG):
+    # Column H logic
     if platelet > 120000:
         H = 0
     elif platelet > 80000:
@@ -213,7 +137,8 @@ def excel_based_severity(platelet, age, C, E, D):
         H = 4
 
     age_factor = 0.5 if (age < 15 or age > 60) else 0
-    I = min(4, C + E + D * 0.5 + age_factor + H)
+    # Column I logic with renamed C=NS1, E=IgM, D=IgG
+    I = min(4, NS1 + IgM + IgG * 0.5 + age_factor + H)
 
     if I < 1:
         verdict = "Mild"
@@ -230,33 +155,23 @@ def required_resource(severity: str) -> str:
     return "ICU" if severity in ("Severe", "Very Severe") else "General Bed"
 
 # ===============================
-# Sidebar: files
+# Load files directly from repo
 # ===============================
-st.sidebar.header("📁 Data files")
-pred_file = st.sidebar.file_uploader("Predictions (CSV/XLSX)", type=["csv","xlsx"])
-loc_file  = st.sidebar.file_uploader("Location matrix (CSV/XLSX)", type=["csv","xlsx"])
+pred_file_path = Path("Predicted dataset AIO.xlsx")
+loc_file_path  = Path("Location matrix.xlsx")
 
-if not pred_file or not loc_file:
-    st.warning("Please upload both Predictions file and Location matrix to proceed.")
+if not pred_file_path.exists() or not loc_file_path.exists():
+    st.error("Required data files not found in repository folder.")
     st.stop()
 
-# ===============================
-# Load data
-# ===============================
-df_pred = read_predictions(pred_file)
-df_loc  = read_location(loc_file)
-if df_pred is None or df_pred.empty or df_loc is None or df_loc.empty:
-    st.error("Error loading files.")
-    st.stop()
+df_pred = ensure_df(pd.read_excel(pred_file_path))
+df_loc  = ensure_df(pd.read_excel(loc_file_path))
 
+# Process predictions
 hospital_col = autodetect(df_pred, ["hospital","hospital name"])
 df_pred["_Hospital"] = df_pred[hospital_col].astype(str).str.strip()
-
 date_col = autodetect(df_pred, ["date"])
-if date_col:
-    df_pred["_Date"] = parse_date_series(df_pred[date_col])
-df_pred = df_pred.dropna(subset=["_Date"])
-
+df_pred["_Date"] = parse_date_series(df_pred[date_col])
 beds_total_col  = autodetect(df_pred, ["beds total"])
 icu_total_col   = autodetect(df_pred, ["icu beds total"])
 beds_occ_col    = autodetect(df_pred, ["beds occupied"])
@@ -271,6 +186,7 @@ availability = (
     .set_index(["_Hospital","_Date"]).sort_index()
 )
 
+# Process location matrix
 dist_mat = build_distance_matrix(df_loc)
 DM_TO_AV, UI_TO_DM, UI_TO_AV = build_name_maps(availability, dist_mat, HOSPITALS_UI)
 
@@ -319,13 +235,13 @@ with st.form("allocation_form"):
     age = st.number_input("Patient Age", min_value=0, max_value=120, value=25)
     weight = st.number_input("Weight (kg)", min_value=1.0, max_value=250.0, value=60.0)
     platelet = st.number_input("Platelet Count", min_value=0, value=120000, step=1000)
-    C_val = st.number_input("C value", min_value=0.0, value=0.0, step=0.1)
-    E_val = st.number_input("E value", min_value=0.0, value=0.0, step=0.1)
-    D_val = st.number_input("D value", min_value=0.0, value=0.0, step=0.1)
+    ns1_val = st.selectbox("NS1 (0=Negative, 1=Positive)", [0, 1], index=0)
+    igm_val = st.selectbox("IgM (0=Negative, 1=Positive)", [0, 1], index=0)
+    igg_val = st.selectbox("IgG (0=Negative, 1=Positive)", [0, 1], index=0)
     submit = st.form_submit_button("🚑 Allocate Patient")
 
 if submit:
-    severity, score = excel_based_severity(platelet, age, C_val, E_val, D_val)
+    severity, score = excel_based_severity(platelet, age, ns1_val, igm_val, igg_val)
     resource = required_resource(severity)
     bed_key  = "ICU" if resource == "ICU" else "Normal"
     start_av = UI_TO_AV.get(hospital_ui) or hospital_ui
