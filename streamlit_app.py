@@ -210,19 +210,20 @@ def reserve_bed(hospital: str, date, bed_type: str, n: int = 1):
 
 def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
     start_dm = UI_TO_DM.get(start_ui_name)
-    if not start_dm or start_dm not in dist_mat.index:
-        return None, None, "Hospital not found in distance matrix", []
-    row = dist_mat.loc[start_dm].astype(float).dropna().sort_values()
     checks = []
+    if not start_dm or start_dm not in dist_mat.index:
+        return None, None, "Hospital not found in distance matrix", checks
+    row = dist_mat.loc[start_dm].astype(float).dropna().sort_values()
     for neighbor_dm, dist in row.items():
         if neighbor_dm == start_dm:
             continue
         neighbor_av = DM_TO_AV.get(neighbor_dm)
+        rem = None
         if neighbor_av and ((neighbor_av, date) in availability.index):
             rem = get_remaining(neighbor_av, date, bed_key)
-            checks.append({"neighbor": neighbor_dm, "remaining": rem})
-            if rem > 0:
-                return neighbor_av, dist, None, checks
+        checks.append({"Neighbor Hospital": neighbor_dm, "Remaining Beds/ICU": rem, "Distance (km)": dist})
+        if rem and rem > 0:
+            return neighbor_av, dist, None, checks
     return None, None, "No hospitals with vacancy found", checks
 
 # ===============================
@@ -247,10 +248,13 @@ if submit:
     start_av = UI_TO_AV.get(hospital_ui) or hospital_ui
     remaining_here = get_remaining(start_av, date_input, bed_key)
 
+    debug_checks = []
     if remaining_here > 0:
         assigned_av, rerouted_distance, note = start_av, None, "Assigned at selected hospital"
+        available_status = "Yes"
     else:
-        assigned_av, rerouted_distance, err, checks = find_reroute_nearest_first(hospital_ui, date_input, bed_key)
+        available_status = "No vacancy available here"
+        assigned_av, rerouted_distance, err, debug_checks = find_reroute_nearest_first(hospital_ui, date_input, bed_key)
         note = f"Rerouted to {assigned_av}" if assigned_av else err
 
     if assigned_av:
@@ -261,7 +265,15 @@ if submit:
         "Severity": severity,
         "Severity Score": score,
         "Resource Needed": resource,
+        "Hospital Tried": hospital_ui,
+        "Available at Current Hospital": available_status,
         "Assigned Hospital": assigned_av,
         "Distance (km)": rerouted_distance,
         "Note": note
     })
+
+    with st.expander("🧪 Debug: Nearest Hospitals Checked"):
+        if debug_checks:
+            st.dataframe(pd.DataFrame(debug_checks))
+        else:
+            st.write("No neighbor checks — patient assigned at selected hospital.")
