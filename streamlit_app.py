@@ -140,7 +140,7 @@ def excel_based_severity(platelet, age, NS1, IgM, IgG):
 
     if I < 1:
         verdict = "Mild"
-    elif I < 2:
+    elif I <= 2.5:
         verdict = "Moderate"
     elif I < 3:
         verdict = "Severe"
