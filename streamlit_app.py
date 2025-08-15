@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple, List, Union
+from typing import Optional, List, Union
 
 # -----------------------------
 # App config
@@ -34,27 +34,20 @@ HOSPITALS = [
 ]
 
 # -----------------------------
-# File helpers
+# Utilities
 # -----------------------------
-def read_any(path_or_buf: Union[str, Path], sheet: Optional[str] = None):
-    """Read CSV or Excel (single sheet). Return DataFrame or None."""
-    try:
-        p = str(path_or_buf)
-        if p.lower().endswith(".csv"):
-            return pd.read_csv(path_or_buf)
-        return pd.read_excel(path_or_buf, sheet_name=sheet)
-    except Exception as e:
-        st.error(f"Failed to read file: {path_or_buf}\n{e}")
-        return None
-
 def ensure_df(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     if isinstance(df, pd.DataFrame):
+        # strip empty columns
+        df = df.dropna(axis=1, how="all")
+        # strip empty rows
+        df = df.dropna(axis=0, how="all")
+        # normalize column names
         df.columns = [str(c).strip() for c in df.columns]
         return df
     return None
 
-def autodetect(df, candidates: List[str]) -> Optional[str]:
-    """Safe auto-detect: returns None if df is not a DataFrame or empty."""
+def autodetect(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     if not isinstance(df, pd.DataFrame) or df.empty:
         return None
     for patt in candidates:
@@ -76,16 +69,84 @@ def parse_date_series(s: pd.Series) -> pd.Series:
             return pd.NaT
     return s.apply(_one)
 
-# -----------------------------
-# Distance matrix
-# -----------------------------
+def guess_header_row(df_no_header: pd.DataFrame, scan_rows: int = 15) -> int:
+    """Heuristic to guess the header row in an Excel sheet read with header=None."""
+    scan = min(len(df_no_header), scan_rows)
+    keywords = ["hospital", "facility", "centre", "center", "date", "year", "month", "bed", "icu"]
+    best_idx, best_score = 0, -1
+    for i in range(scan):
+        row = df_no_header.iloc[i].astype(str).str.lower()
+        score = row.notna().sum()
+        if any(any(kw in str(val) for val in row) for kw in keywords):
+            score += 10
+        if score > best_score:
+            best_score, best_idx = score, i
+    return int(best_idx)
+
+def read_predictions(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Optional[pd.DataFrame]:
+    """Robust CSV/XLSX loader with sheet + header selection for Excel."""
+    name = str(getattr(file_obj_or_path, "name", file_obj_or_path)).lower()
+
+    # CSV path
+    if name.endswith(".csv"):
+        # Try a few strategies to avoid "empty" reads due to delimiter/encoding
+        try:
+            df = pd.read_csv(file_obj_or_path)
+        except Exception:
+            try:
+                if hasattr(file_obj_or_path, "seek"): file_obj_or_path.seek(0)
+                df = pd.read_csv(file_obj_or_path, sep=None, engine="python")
+            except Exception:
+                if hasattr(file_obj_or_path, "seek"): file_obj_or_path.seek(0)
+                df = pd.read_csv(file_obj_or_path, encoding="latin1")
+        return ensure_df(df)
+
+    # Excel path
+    try:
+        xl = pd.ExcelFile(file_obj_or_path)
+    except Exception as e:
+        st.error(f"Could not open Excel file: {e}")
+        return None
+
+    # Choose sheet (default: the largest by non-empty rows)
+    sizes = {}
+    for s in xl.sheet_names:
+        try:
+            df_sample = pd.read_excel(xl, sheet_name=s, nrows=25, header=None)
+            sizes[s] = int(df_sample.dropna(how="all").shape[0])
+        except Exception:
+            sizes[s] = 0
+    default_sheet = sorted(sizes.items(), key=lambda x: x[1], reverse=True)[0][0] if sizes else xl.sheet_names[0]
+    sheet = st.sidebar.selectbox("Predictions sheet", xl.sheet_names, index=xl.sheet_names.index(default_sheet))
+
+    # Read without header to guess header row
+    df_no_header = pd.read_excel(xl, sheet_name=sheet, header=None)
+    df_no_header = df_no_header.dropna(how="all", axis=1)
+    guess = guess_header_row(df_no_header)
+    header_row = st.sidebar.number_input("Predictions header row (0-index)", min_value=0,
+                                         max_value=max(0, len(df_no_header)-1), value=int(guess), step=1)
+
+    # Final read with header
+    df = pd.read_excel(xl, sheet_name=sheet, header=int(header_row))
+    return ensure_df(df)
+
+def read_location(file_obj_or_path: Union[str, Path, "UploadedFile"]) -> Optional[pd.DataFrame]:
+    name = str(getattr(file_obj_or_path, "name", file_obj_or_path)).lower()
+    try:
+        if name.endswith(".csv"):
+            try:
+                df = pd.read_csv(file_obj_or_path)
+            except Exception:
+                if hasattr(file_obj_or_path, "seek"): file_obj_or_path.seek(0)
+                df = pd.read_csv(file_obj_or_path, sep=None, engine="python")
+        else:
+            df = pd.read_excel(file_obj_or_path)
+        return ensure_df(df)
+    except Exception as e:
+        st.error(f"Failed to read Location matrix: {e}")
+        return None
+
 def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Accepts:
-      - Long form: [from, to, distance]
-      - Wide form: first col = hospital, others = hospitals (numeric distances)
-    Returns symmetric matrix.
-    """
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
@@ -110,17 +171,9 @@ def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
 # Severity & allocation helpers
 # -----------------------------
 def to_bool01(x: int) -> bool:
-    """Convert 0/1 int to boolean."""
     return bool(int(x))
 
 def simple_severity(platelet: float, igg: bool, igm: bool, ns1: bool) -> str:
-    """
-    Conservative fallback rules:
-      - Very Severe: platelet < 20k
-      - Severe: (platelet < 50k) or (NS1 positive and platelet < 80k)
-      - Moderate: any marker positive
-      - Normal: otherwise
-    """
     if platelet is not None and platelet < 20000:
         return "Very Severe"
     if (platelet is not None and platelet < 50000) or (ns1 and platelet is not None and platelet < 80000):
@@ -139,7 +192,7 @@ st.sidebar.header("📁 Data files")
 pred_file = st.sidebar.file_uploader("Predictions (CSV/XLSX)", type=["csv", "xlsx"])
 loc_file  = st.sidebar.file_uploader("Location matrix (CSV/XLSX)", type=["csv", "xlsx"])
 
-# Allow common filenames if running from a repo (optional)
+# Allow common filenames when running from repo
 def default_if_exists(name, current):
     return current or (Path(name) if Path(name).exists() else None)
 
@@ -148,19 +201,22 @@ pred_file = default_if_exists("ensemble_predictions_2026_2027_dynamic.xlsx", pre
 loc_file  = default_if_exists("Location matrix.xlsx", loc_file)
 loc_file  = default_if_exists("distance matrix.csv", loc_file)
 
-if not pred_file or not loc_file:
-    st.error("Please provide a **Predictions** file and a **Location matrix**.")
+# -----------------------------
+# Load data (robust)
+# -----------------------------
+if not pred_file:
+    st.error("Please upload or include a **Predictions** file (CSV/XLSX).")
+    st.stop()
+if not loc_file:
+    st.error("Please upload or include a **Location matrix** (CSV/XLSX).")
     st.stop()
 
-# -----------------------------
-# Load data
-# -----------------------------
-df_pred = ensure_df(read_any(pred_file))
-df_loc  = ensure_df(read_any(loc_file))
-
+df_pred = read_predictions(pred_file)
 if df_pred is None or df_pred.empty:
-    st.error("Predictions file could not be read or is empty.")
+    st.error("Predictions file could not be read or is empty. Try selecting a different sheet or header row in the sidebar.")
     st.stop()
+
+df_loc = read_location(loc_file)
 if df_loc is None or df_loc.empty:
     st.error("Location matrix could not be read or is empty.")
     st.stop()
@@ -170,7 +226,7 @@ with st.expander("🔎 Detected columns (debug)"):
     st.write("**Location columns:**", list(df_loc.columns))
 
 # -----------------------------
-# Map predictions columns
+# Map predictions -> availability
 # -----------------------------
 hospital_col = autodetect(df_pred, ["hospital", "hospital name", "hosp", "facility", "center", "centre", "clinic"])
 if hospital_col is None:
@@ -179,10 +235,9 @@ if hospital_col is None:
 else:
     hospital_col = st.sidebar.selectbox("Select Hospital column", df_pred.columns.tolist(),
                                         index=df_pred.columns.tolist().index(hospital_col))
-
 df_pred["_Hospital"] = df_pred[hospital_col].astype(str).map(normalize_hospital)
 
-# Date column OR Year+Month
+# Date OR Year+Month
 date_col  = autodetect(df_pred, ["date"])
 year_col  = autodetect(df_pred, ["year"])
 month_col = autodetect(df_pred, ["month"])
@@ -195,17 +250,16 @@ elif year_col and month_col:
         errors="coerce"
     ).dt.date
 else:
-    st.error("Provide either a **Date** column or both **Year** and **Month** in predictions.")
+    st.error("Provide either a **Date** column or both **Year** and **Month** in predictions (use the sheet/header selectors if needed).")
     st.stop()
 
-# Prefer predicted availability columns; else fallback to Totals − Occupied
+# Prefer predicted availability; else Totals − Occupied
 pred_normal_avail_col = autodetect(df_pred, [
     "predicted normal beds available", "normal beds available (pred)", "beds available predicted", "pred beds"
 ])
 pred_icu_avail_col    = autodetect(df_pred, [
     "predicted icu beds available", "icu beds available (pred)", "icu available predicted", "pred icu"
 ])
-
 beds_total_col  = autodetect(df_pred, ["beds total", "total beds"])
 icu_total_col   = autodetect(df_pred, ["icu beds total", "total icu"])
 beds_occ_col    = autodetect(df_pred, ["beds occupied", "occupied beds"])
@@ -220,7 +274,7 @@ elif all([beds_total_col, beds_occ_col, icu_total_col, icu_occ_col]):
     df_pred["_ICUAvail"]  = (pd.to_numeric(df_pred[icu_total_col], errors="coerce") -
                              pd.to_numeric(df_pred[icu_occ_col], errors="coerce")).fillna(0).astype(int)
 else:
-    st.error("Could not find predicted availability columns or fallback (Totals & Occupied).")
+    st.error("Could not find predicted availability columns or fallback (Totals & Occupied). Check header row/sheet and column names.")
     st.stop()
 
 df_pred = df_pred.dropna(subset=["_Date"])
@@ -230,7 +284,7 @@ availability = (
 )
 
 # -----------------------------
-# Build & normalize distance matrix
+# Distance matrix & normalization
 # -----------------------------
 try:
     dist_mat = build_distance_matrix(df_loc)
@@ -247,9 +301,6 @@ if "reservations" not in st.session_state:
     st.session_state["reservations"] = {}  # (hospital, date, type) -> count
 
 def get_remaining(hospital: str, date, bed_type: str) -> int:
-    """
-    bed_type: "ICU" or "Normal"
-    """
     key = (hospital, date)
     base = 0
     if key in availability.index:
@@ -269,7 +320,7 @@ def find_reroute_nearest_first(dist_mat: pd.DataFrame, start_hospital: str, date
     Walk the distance row for start_hospital from nearest to farthest:
       - skip self
       - require (neighbor, date) exists in predictions
-      - require remaining capacity for requested bed_key ("ICU" or "Normal")
+      - require remaining capacity for bed_key ("ICU" or "Normal")
     Returns: (assigned_hospital, distance_float, error_message_or_None)
     """
     if start_hospital not in dist_mat.index:
@@ -283,8 +334,7 @@ def find_reroute_nearest_first(dist_mat: pd.DataFrame, start_hospital: str, date
 
     for neighbor, dist in row.items():
         if str(neighbor).strip() == str(start_hospital).strip():
-            continue  # skip self
-        # Only consider hospitals that actually exist for this date in predictions
+            continue
         if (neighbor, date) not in availability.index:
             continue
         if get_remaining(neighbor, date, bed_key) > 0:
@@ -295,7 +345,6 @@ def find_reroute_nearest_first(dist_mat: pd.DataFrame, start_hospital: str, date
 # -----------------------------
 # UI – Patient inputs (exactly as requested)
 # -----------------------------
-# Available global date range from predictions
 all_dates = sorted(list(set([d for _, d in availability.index])))
 if not all_dates:
     st.error("No dates found in predictions after processing.")
@@ -320,17 +369,14 @@ with st.form("allocation_form"):
     submit = st.form_submit_button("🚑 Allocate")
 
 if submit:
-    # Convert to bools
     igg = bool(int(igg01))
     igm = bool(int(ign01))  # igN treated as IgM
     ns1 = bool(int(ns101))
 
-    # Severity → resource
     severity = simple_severity(platelet=float(platelet), igg=igg, igm=igm, ns1=ns1)
     resource = required_resource(severity)
     bed_key = "ICU" if resource == "ICU" else "Normal"
 
-    # Try selected hospital first
     remaining_here = get_remaining(hospital, date_input, bed_key)
     assigned_hospital = hospital
     rerouted_distance = None
@@ -349,7 +395,6 @@ if submit:
         else:
             note = err or "No hospitals with vacancy found for selected date and resource"
 
-    # Reserve upon success
     if assigned_hospital and "No hospitals" not in note:
         reserve_bed(assigned_hospital, date_input, bed_key, n=1)
 
