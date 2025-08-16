@@ -174,9 +174,9 @@ def excel_based_severity(platelet, age, NS1, IgM, IgG):
     else: H = 4
     age_factor = 0.5 if (age < 15 or age > 60) else 0
     I = min(4, NS1 + IgM + IgG * 0.5 + age_factor + H)
-    if I < 1: verdict = "Mild"
-    elif I < 2: verdict = "Moderate"
-    elif I < 3: verdict = "Severe"
+    if I <= 1: verdict = "Mild"
+    elif I < 2.5: verdict = "Moderate"
+    elif I < 4: verdict = "Severe"
     else: verdict = "Very Severe"
     return verdict, I
 
