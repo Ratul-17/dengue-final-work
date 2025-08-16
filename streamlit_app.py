@@ -12,7 +12,7 @@ from typing import Optional, List
 # App config
 # ===============================
 st.set_page_config(page_title="Dengue Allocation", page_icon="🏥", layout="wide")
-st.title("🏥 Integrated Hospital Dengue Patient Allocation System")
+st.title("🏥 Integrated Hospital Dengue Patient Allocation System (DSCC Region)")
 
 # ===============================
 # Fixed hospital list
