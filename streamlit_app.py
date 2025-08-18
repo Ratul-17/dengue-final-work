@@ -165,20 +165,45 @@ def build_name_maps(availability, dist_mat, ui_list):
 # ===============================
 # Excel-based severity (NS1, IgM, IgG as 0/1)
 # ===============================
-def excel_based_severity(platelet, age, NS1, IgM, IgG):
-    if platelet > 120000: H = 0
-    elif platelet > 80000: H = 0.5
-    elif platelet > 60000: H = 1
-    elif platelet > 30000: H = 2
-    elif platelet >= 10000: H = 3
-    else: H = 4
-    age_factor = 0.5 if (age < 15 or age > 60) else 0
-    I = min(4, NS1 + IgM * 0.5 + IgG * 0.5 + age_factor + H)
-    if I <= 1: verdict = "Mild"
-    elif I < 2.5: verdict = "Moderate"
-    elif I < 4: verdict = "Severe"
-    else: verdict = "Very Severe"
-    return verdict, I
+def compute_platelet_score(platelet: int) -> int:
+    """
+    Platelet score bins:
+      ≥150k → 0
+      100–149k → 1
+      50–99k → 2
+      20–49k → 3
+      <20k → 4
+    """
+    if platelet >= 150_000: return 0
+    if platelet >= 100_000: return 1
+    if platelet >= 50_000:  return 2
+    if platelet >= 20_000:  return 3
+    return 4
+
+def compute_severity_score(age: int, ns1: int, igm: int, igg: int, platelet: int) -> tuple[int, int]:
+    """
+    Composite = round(PlateletScore + AgeWeight + SecondaryWeight), capped at 4
+      AgeWeight: +1 if age < 15 or age > 60
+      SecondaryWeight: +1 if IgG=1 and (NS1=1 or IgM=1)
+    Returns (platelet_score, severity_score)
+    """
+    p_score = compute_platelet_score(platelet)
+    age_weight = 1 if (age < 15 or age > 60) else 0
+    secondary = 1 if (igg == 1 and (ns1 == 1 or igm == 1)) else 0
+    severity_score = min(4, round(p_score + age_weight + secondary))
+    return p_score, severity_score
+
+def verdict_from_score(score: int) -> str:
+    """
+    0 -> Mild
+    1 -> Moderate
+    2 -> Severe
+    3–4 -> Very Severe
+    """
+    if score >= 3: return "Very Severe"
+    if score == 2: return "Severe"
+    if score == 1: return "Moderate"
+    return "Mild"
 
 def required_resource(severity: str) -> str:
     return "ICU" if severity in ("Severe", "Very Severe") else "General Bed"
