@@ -379,7 +379,7 @@ with st.form("allocation_form"):
 # Allocation on submit
 # ===============================
 if submit:
-    severity, score = excel_based_severity(platelet, age, ns1_val, igm_val, igg_val)
+    severity, score = compute_severity_score(platelet, age, ns1_val, igm_val, igg_val)
     resource = required_resource(severity)
     bed_key  = "ICU" if resource == "ICU" else "Normal"
     start_av = UI_TO_AV.get(hospital_ui) or hospital_ui
