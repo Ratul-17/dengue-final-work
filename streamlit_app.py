@@ -413,12 +413,12 @@ if submit:
       </div>
     ''', unsafe_allow_html=True)
 
-    # 2) Platelet score card
+    # 2) Resource needed card (replaces Platelet Score card)
     st.markdown(f'''
       <div class="card">
-        <div class="kpi">{p_score}</div>
-        <div class="kpi-label">Platelet Score</div>
-        <div class="ribbon"><span class="badge blue">0–4</span></div>
+        <div class="kpi">{resource}</div>
+        <div class="kpi-label">Resource Needed</div>
+        <div class="ribbon">{resource_badge(resource)}</div>
       </div>
     ''', unsafe_allow_html=True)
 
@@ -471,7 +471,6 @@ if submit:
         summary = {
             "Severity": severity,
             "Resource": resource,
-            "Platelet Score": p_score,
             "Severity Score": s_score,
             "Hospital Tried": tried,
             "Available at Current Hospital": available_status,
