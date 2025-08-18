@@ -163,16 +163,16 @@ def build_name_maps(availability, dist_mat, ui_list):
     return dm_to_av, ui_to_dm, ui_to_av
 
 # ===============================
-# Excel-based severity (NS1, IgM, IgG as 0/1)
+# Severity logic (research-based bins you requested)
 # ===============================
 def compute_platelet_score(platelet: int) -> int:
     """
     Platelet score bins:
       ≥150k → 0
       100–149k → 1
-      50–99k → 2
-      20–49k → 3
-      <20k → 4
+      50–99k  → 2
+      20–49k  → 3
+      <20k    → 4
     """
     if platelet >= 150_000: return 0
     if platelet >= 100_000: return 1
@@ -379,9 +379,12 @@ with st.form("allocation_form"):
 # Allocation on submit
 # ===============================
 if submit:
-    severity, score = compute_severity_score(platelet, age, ns1_val, igm_val, igg_val)
+    # ---- New severity logic ----
+    p_score, s_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
+    severity = verdict_from_score(s_score)
     resource = required_resource(severity)
     bed_key  = "ICU" if resource == "ICU" else "Normal"
+
     start_av = UI_TO_AV.get(hospital_ui) or hospital_ui
     remaining_here = get_remaining(start_av, date_input, bed_key)
 
@@ -400,21 +403,26 @@ if submit:
     # ---------- Allocation Ticket UI ----------
     st.subheader("Allocation Result")
     st.markdown('<div class="grid grid-4">', unsafe_allow_html=True)
-    # KPI cards
+
+    # 1) Severity score card
     st.markdown(f'''
       <div class="card">
-        <div class="kpi">{round(float(score),2)}</div>
+        <div class="kpi">{s_score}</div>
         <div class="kpi-label">Severity Score</div>
         <div class="ribbon">{severity_badge(severity)}</div>
       </div>
     ''', unsafe_allow_html=True)
+
+    # 2) Platelet score card
     st.markdown(f'''
       <div class="card">
-        <div class="kpi">{resource}</div>
-        <div class="kpi-label">Resource Needed</div>
-        <div class="ribbon">{resource_badge(resource)}</div>
+        <div class="kpi">{p_score}</div>
+        <div class="kpi-label">Platelet Score</div>
+        <div class="ribbon"><span class="badge blue">0–4</span></div>
       </div>
     ''', unsafe_allow_html=True)
+
+    # 3) Date card
     st.markdown(f'''
       <div class="card">
         <div class="kpi">{pd.to_datetime(date_input).date()}</div>
@@ -422,6 +430,8 @@ if submit:
         <div class="ribbon"><span class="badge blue">{granularity}</span></div>
       </div>
     ''', unsafe_allow_html=True)
+
+    # 4) Travel distance card
     dist_txt = f"{float(rerouted_distance):.1f} km" if rerouted_distance is not None else "—"
     st.markdown(f'''
       <div class="card">
@@ -430,6 +440,7 @@ if submit:
         <div class="ribbon"><span class="badge blue">{interp_method if granularity!='Monthly' else 'N/A'}</span></div>
       </div>
     ''', unsafe_allow_html=True)
+
     st.markdown('</div>', unsafe_allow_html=True)
 
     # Ticket
@@ -460,6 +471,8 @@ if submit:
         summary = {
             "Severity": severity,
             "Resource": resource,
+            "Platelet Score": p_score,
+            "Severity Score": s_score,
             "Hospital Tried": tried,
             "Available at Current Hospital": available_status,
             "Assigned Hospital": assigned_av,
