@@ -246,19 +246,23 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
     if date_col:
         df["_Date"] = pd.to_datetime(df[date_col], errors="coerce")
     elif year_col and month_col:
-        if day_col: df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
-        else: df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" +
-                                           df[month_col].astype(int).astype(str) + "-01", errors="coerce")
+        if day_col: 
+            df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
+        else: 
+            df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" +
+                                         df[month_col].astype(int).astype(str) + "-01", errors="coerce")
     else:
         raise ValueError("Provide either a Date column or (Year & Month) in predictions.")
     df = df.dropna(subset=["_Date"]); df["_Date"] = df["_Date"].dt.normalize()
 
+    # Detect all key columns
     pred_normal_avail_col = autodetect(df, ["predicted normal beds available","normal beds available (pred)","beds available predicted","pred beds"])
     pred_icu_avail_col    = autodetect(df, ["predicted icu beds available","icu beds available (pred)","icu available predicted","pred icu"])
     beds_total_col  = autodetect(df, ["beds total","total beds"])
     icu_total_col   = autodetect(df, ["icu beds total","total icu"])
     beds_occ_col    = autodetect(df, ["beds occupied","occupied beds"])
     icu_occ_col     = autodetect(df, ["icu beds occupied","occupied icu"])
+    admitted_till_date_col = autodetect(df, ["total admitted till date", "admitted till date", "total admitted"])
 
     if pred_normal_avail_col and pred_icu_avail_col:
         df["_BedsAvail"] = pd.to_numeric(df[pred_normal_avail_col], errors="coerce")
@@ -268,47 +272,50 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
         df["_ICUAvail"]  = pd.to_numeric(df[icu_total_col],  errors="coerce") - pd.to_numeric(df[icu_occ_col],  errors="coerce")
     else:
         raise ValueError("Could not find predicted availability columns or totals/occupied fallback.")
+
     df["_BedsAvail"] = df["_BedsAvail"].fillna(0); df["_ICUAvail"] = df["_ICUAvail"].fillna(0)
 
+    # NEW: attach total admitted till date if found
+    if admitted_till_date_col:
+        df["_TotalAdmittedTillDate"] = pd.to_numeric(df[admitted_till_date_col], errors="coerce").fillna(0)
+    else:
+        df["_TotalAdmittedTillDate"] = np.nan  # fallback
+
+    # Keep column when building long availability frame
     if granularity == "Monthly":
         df["_Month"] = df["_Date"].dt.to_period("M").dt.to_timestamp()
-        grouped = (df.groupby(["_Hospital","_Month"], as_index=False)[["_BedsAvail","_ICUAvail"]].mean())
-        availability = (grouped.set_index(["_Hospital","_Month"]).sort_index())
+        grouped = df.groupby(["_Hospital","_Month"], as_index=False)[["_BedsAvail","_ICUAvail","_TotalAdmittedTillDate"]].mean()
+        availability = grouped.set_index(["_Hospital","_Month"]).sort_index()
         availability.index = availability.index.set_names(["_Hospital","_Date"])
         return availability
 
-    # Expand to Daily, then weekly if needed
     df_ts = df.set_index("_Date")
     beds_piv = df_ts.pivot_table(index="_Date", columns="_Hospital", values="_BedsAvail", aggfunc="mean")
     icu_piv  = df_ts.pivot_table(index="_Date", columns="_Hospital", values="_ICUAvail",  aggfunc="mean")
+    admit_piv= df_ts.pivot_table(index="_Date", columns="_Hospital", values="_TotalAdmittedTillDate", aggfunc="last")
+    
     full_idx = pd.date_range(start=beds_piv.index.min(), end=beds_piv.index.max(), freq="D")
-    beds_piv = beds_piv.reindex(full_idx); icu_piv = icu_piv.reindex(full_idx)
+    beds_piv = beds_piv.reindex(full_idx)
+    icu_piv  = icu_piv.reindex(full_idx)
+    admit_piv= admit_piv.reindex(full_idx)
 
     if interp_method == "linear":
         beds_piv = beds_piv.interpolate(method="time", limit_direction="both")
         icu_piv  = icu_piv.interpolate(method="time", limit_direction="both")
+        admit_piv= admit_piv.ffill()
     else:
-        beds_piv = beds_piv.ffill().bfill(); icu_piv = icu_piv.ffill().bfill()
+        beds_piv = beds_piv.ffill().bfill()
+        icu_piv  = icu_piv.ffill().bfill()
+        admit_piv= admit_piv.ffill()
 
-    if granularity == "Weekly":
-        beds_piv = beds_piv.resample("W-MON").mean()
-        icu_piv  = icu_piv.resample("W-MON").mean()
+    beds_long  = beds_piv.stack(dropna=False).rename("_BedsAvail").to_frame()
+    icu_long   = icu_piv.stack(dropna=False).rename("_ICUAvail").to_frame()
+    admit_long = admit_piv.stack(dropna=False).rename("_TotalAdmittedTillDate").to_frame()
 
-    beds_long = beds_piv.stack(dropna=False).rename("_BedsAvail").to_frame()
-    icu_long  = icu_piv.stack(dropna=False).rename("_ICUAvail").to_frame()
-    long_df = beds_long.join(icu_long, how="outer").reset_index()
-    long_df.columns = ["_Date","_Hospital","_BedsAvail","_ICUAvail"]
-    long_df["_BedsAvail"] = long_df["_BedsAvail"].fillna(0).clip(lower=0)
-    long_df["_ICUAvail"]  = long_df["_ICUAvail"].fillna(0).clip(lower=0)
-    availability = (long_df.groupby(["_Hospital","_Date"], as_index=False)[["_BedsAvail","_ICUAvail"]]
-                    .mean().set_index(["_Hospital","_Date"]).sort_index())
-    return availability
-
-try:
-    availability = build_availability_from_predictions(df_pred_raw, granularity, interp_method)
-except Exception as e:
-    st.error(f"Error building availability: {e}")
-    st.stop()
+    long_df = beds_long.join(icu_long).join(admit_long).reset_index()
+    long_df.columns = ["_Date","_Hospital","_BedsAvail","_ICUAvail","_TotalAdmittedTillDate"]
+    availability = long_df.groupby(["_Hospital","_Date"], as_index=False)[["_BedsAvail","_ICUAvail","_TotalAdmittedTillDate"]].mean()
+    return availability.set_index(["_Hospital","_Date"]).sort_index()
 
 # ===============================
 # Distance matrix + name maps
@@ -380,8 +387,12 @@ def log_reroute(original_ui: str, assigned_av: str, date) -> None:
         "month": m
     })
 
-def get_month_served(hospital_av_name: str, month_str: str) -> int:
-    return st.session_state["served"].get((hospital_av_name, month_str), 0)
+def get_month_served(hospital_av_name: str, date) -> int:
+    key = (hospital_av_name, pd.to_datetime(date).normalize())
+    if key in availability.index and "_TotalAdmittedTillDate" in availability.columns:
+        val = availability.loc[key, "_TotalAdmittedTillDate"]
+        return int(val) if not pd.isna(val) else 0
+    return 0
 
 def served_df_for_month(month_str: str) -> pd.DataFrame:
     rows = []
@@ -577,7 +588,7 @@ def get_avail_counts(hospital_av_name: str, date) -> dict:
 # Dashboard for selected UI hospital
 st.markdown(f"### Dashboard — {dashboard_ui_hospital}  (month: {dashboard_month})")
 h_avail = get_avail_counts(dashboard_start_av, dashboard_date)
-served_count = get_month_served(dashboard_start_av, dashboard_month)
+served_count = get_month_served(dashboard_start_av, dashboard_date)
 
 col1, col2, col3 = st.columns([1,1,1])
 with col1:
