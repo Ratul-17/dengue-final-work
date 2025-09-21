@@ -134,10 +134,10 @@ def norm_key(s: str) -> str:
 
 def build_name_maps(availability, dist_mat, ui_list):
     # --- Get hospital names safely ---
-    if isinstance(availability.index, pd.MultiIndex):
-        avail_names = sorted(set(availability.index.get_level_values(0).tolist()))
-    else:
-        avail_names = sorted(set(availability.index.tolist()))
+  if isinstance(availability.index, pd.MultiIndex):
+    avail_names = availability.index.get_level_values(0)
+else:
+    avail_names = availability.index
     
     dm_names = sorted(set(map(str, dist_mat.index.tolist())) | set(map(str, dist_mat.columns.tolist())))
     ui_names = list(ui_list)
