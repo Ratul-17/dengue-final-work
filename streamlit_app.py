@@ -575,8 +575,9 @@ def get_avail_counts(hospital_av_name: str, date) -> dict:
     return out
 
 # Dashboard for selected UI hospital
-st.markdown(f"### Dashboard — {dashboard_ui_hospital}  (month: {dashboard_month})")
+st.markdown(f"### Dashboard — {dashboard_ui_hospital}  (Month: {dashboard_month})")
 h_avail = get_avail_counts(dashboard_start_av, dashboard_date)
+# <-- FIXED: served_count now shows only patients served in the selected month
 served_count = get_month_served(dashboard_start_av, dashboard_month)
 
 col1, col2, col3 = st.columns([1,1,1])
@@ -598,11 +599,9 @@ with col3:
     st.markdown(f'''
       <div class="card">
         <div class="kpi">{served_count}</div>
-        <div class="kpi-label">Total Patients Served (this month)</div>
+        <div class="kpi-label">Patients Served (this month)</div>
       </div>
     ''', unsafe_allow_html=True)
-
-st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
 # If the last allocation resulted in reroute to another hospital, show rerouted dashboards
 # We'll display any hospitals assigned in the same month as the dashboard_date that were assigned as reroutes
