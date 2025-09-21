@@ -133,7 +133,12 @@ def norm_key(s: str) -> str:
     return "".join(tokens)
 
 def build_name_maps(availability, dist_mat, ui_list):
-    avail_names = sorted(set(availability.index.get_level_values(0).tolist()))
+    # --- Get hospital names safely ---
+    if isinstance(availability.index, pd.MultiIndex):
+        avail_names = sorted(set(availability.index.get_level_values(0).tolist()))
+    else:
+        avail_names = sorted(set(availability.index.tolist()))
+    
     dm_names = sorted(set(map(str, dist_mat.index.tolist())) | set(map(str, dist_mat.columns.tolist())))
     ui_names = list(ui_list)
 
@@ -143,7 +148,8 @@ def build_name_maps(availability, dist_mat, ui_list):
     dm_to_av = {}
     for d in dm_names:
         kd = norm_key(d)
-        if kd in avail_by_key: dm_to_av[d] = avail_by_key[kd]
+        if kd in avail_by_key: 
+            dm_to_av[d] = avail_by_key[kd]
         else:
             m = get_close_matches(kd, list(avail_by_key.keys()), n=1, cutoff=0.6)
             dm_to_av[d] = avail_by_key[m[0]] if m else None
@@ -151,12 +157,14 @@ def build_name_maps(availability, dist_mat, ui_list):
     ui_to_dm, ui_to_av = {}, {}
     for u in ui_names:
         ku = norm_key(u)
-        if ku in dm_by_key: ui_to_dm[u] = dm_by_key[ku]
+        if ku in dm_by_key: 
+            ui_to_dm[u] = dm_by_key[ku]
         else:
             m = get_close_matches(ku, list(dm_by_key.keys()), n=1, cutoff=0.6)
             ui_to_dm[u] = dm_by_key[m[0]] if m else None
 
-        if ku in avail_by_key: ui_to_av[u] = avail_by_key[ku]
+        if ku in avail_by_key: 
+            ui_to_av[u] = avail_by_key[ku]
         else:
             m2 = get_close_matches(ku, list(avail_by_key.keys()), n=1, cutoff=0.6)
             ui_to_av[u] = avail_by_key[m2[0]] if m2 else None
