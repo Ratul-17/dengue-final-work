@@ -394,17 +394,25 @@ def served_df_for_month(month_str: str) -> pd.DataFrame:
     return df
 
 # ===============================
-# UI – Patient inputs
+# UI – Patient inputs (now also drives dashboard)
 # ===============================
 all_dates = sorted(list(set([d for _, d in availability.index])))
 min_d, max_d = min(all_dates), max(all_dates)
+
+# Persistent hospital/date selection in session state
+if "selected_hospital_ui" not in st.session_state:
+    st.session_state["selected_hospital_ui"] = HOSPITALS_UI[0]
+if "selected_date" not in st.session_state:
+    st.session_state["selected_date"] = max_d
 
 with st.form("allocation_form"):
     st.subheader("Patient Intake")
     c1,c2,c3,c4 = st.columns([1.2,1,1,1])
     with c1:
-        hospital_ui = st.selectbox("Hospital Name", HOSPITALS_UI)
-        date_input  = st.date_input("Date", value=max_d, min_value=min_d, max_value=max_d)
+        hospital_ui = st.selectbox("Hospital Name", HOSPITALS_UI,
+                                   index=HOSPITALS_UI.index(st.session_state["selected_hospital_ui"]))
+        date_input  = st.date_input("Date", value=st.session_state["selected_date"],
+                                    min_value=min_d, max_value=max_d)
         weight = st.number_input("Weight (kg)", min_value=1.0, max_value=250.0, value=60.0)
     with c2:
         age = st.number_input("Age (years)", min_value=0, max_value=120, value=25)
@@ -416,6 +424,35 @@ with st.form("allocation_form"):
         igg_val = st.selectbox("IgG", [0,1], index=0, help="0=Negative, 1=Positive")
         st.caption(f"Time: **{granularity}** · Interp: **{interp_method if granularity!='Monthly' else 'N/A'}**")
     submit = st.form_submit_button("🚑 Allocate")
+
+# Store latest selections in session state (used by dashboard)
+st.session_state["selected_hospital_ui"] = hospital_ui
+st.session_state["selected_date"] = date_input
+
+# ===============================
+# Allocation on submit (unchanged except we now use session_state values)
+# ===============================
+assigned_av = None
+rerouted_distance = None
+note = ""
+debug_checks = []
+
+if submit:
+    ...
+    # (allocation logic remains the same)
+    ...
+
+# ===============================
+# Dashboard: show hospital month info (reusing allocation input)
+# ===============================
+st.markdown("---")
+st.header("📊 Hospital Monthly Dashboard")
+
+dashboard_ui_hospital = st.session_state["selected_hospital_ui"]
+dashboard_date = st.session_state["selected_date"]
+
+dashboard_start_av = UI_TO_AV.get(dashboard_ui_hospital) or dashboard_ui_hospital
+dashboard_month = month_str_from_date(dashboard_date)
 
 # ===============================
 # Allocation on submit
@@ -554,12 +591,8 @@ if submit:
 st.markdown("---")
 st.header("📊 Hospital Monthly Dashboard")
 
-# Select a hospital for dashboard view (allow choosing UI hospital or direct availability hospital)
-dash_col1, dash_col2 = st.columns([1,1])
-with dash_col1:
-    dashboard_ui_hospital = st.selectbox("Choose hospital to view dashboard", HOSPITALS_UI, index=0)
-with dash_col2:
-    dashboard_date = st.date_input("View month (pick any date in month)", value=max_d, min_value=min_d, max_value=max_d)
+dashboard_ui_hospital = st.session_state["selected_hospital_ui"]
+dashboard_date = st.session_state["selected_date"]
 
 dashboard_start_av = UI_TO_AV.get(dashboard_ui_hospital) or dashboard_ui_hospital
 dashboard_month = month_str_from_date(dashboard_date)
