@@ -4,10 +4,9 @@ import pandas as pd
 import numpy as np
 import re
 from difflib import get_close_matches
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
-import plotly.express as px
 
 # ===============================
 # App config
@@ -16,7 +15,7 @@ st.set_page_config(page_title="Dengue Allocation", page_icon="🏥", layout="wid
 st.title("🏥 Integrated Hospital Dengue Patient Allocation System (DSCC Region)")
 
 # ===============================
-# Fixed hospital list (UI names)
+# Fixed hospital list
 # ===============================
 HOSPITALS_UI = [
     "Dhaka Medical College Hospital",
@@ -40,35 +39,62 @@ HOSPITALS_UI = [
 ]
 
 # ===============================
-# Styles (catchy, glassy cards)
+# Styles (glassmorphism + chips)
 # ===============================
 st.markdown("""
 <style>
-:root{--muted:#94a3b8;--accent:#06b6d4;--good:#10b981;--warn:#f59e0b;--bad:#ef4444}
-html, body, [data-testid="stAppViewContainer"]{background:linear-gradient(135deg,#071126 0%,#071b2a 60%,#081527 100%) !important;color:#e6eef8}
-.card{border-radius:14px;padding:14px;background:linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.02));border:1px solid rgba(255,255,255,0.04);}
-.kpi{font-weight:800;font-size:2.0rem;margin:0}
-.kpi-label{color:var(--muted);font-size:.9rem}
+:root{
+  --bg:#0b1220; --card:#0f172a; --muted:#94a3b8;
+  --ring:#22d3ee; --good:#10b981; --warn:#f59e0b; --bad:#ef4444; --info:#3b82f6;
+}
+html, body, [data-testid="stAppViewContainer"]{background:linear-gradient(135deg,#0b1220 0%,#0b1220 40%,#111827 100%) !important;}
+.card{border-radius:18px;padding:18px 20px;background:rgba(255,255,255,0.06);backdrop-filter:blur(8px);
+      border:1px solid rgba(255,255,255,0.08); box-shadow:0 10px 30px rgba(0,0,0,.25);}
+.grid{display:grid; gap:14px;}
+.grid-4{grid-template-columns:repeat(4,minmax(0,1fr));}
+.kpi{font-weight:800;font-size:2rem;line-height:1;margin:0;}
+.kpi-label{margin:2px 0 0 0;color:var(--muted);font-size:.9rem;}
+.ribbon{display:inline-flex;align-items:center;gap:.6rem;margin-top:8px}
+.badge{padding:6px 12px;border-radius:9999px;font-weight:700;color:#fff;display:inline-flex;align-items:center;gap:.4rem}
+.badge.red{background:linear-gradient(135deg,#ef4444,#b91c1c)}
+.badge.amber{background:linear-gradient(135deg,#f59e0b,#b45309)}
+.badge.green{background:linear-gradient(135deg,#10b981,#047857)}
+.badge.blue{background:linear-gradient(135deg,#3b82f6,#1d4ed8)}
+.pill{padding:8px 14px;border-radius:9999px;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.12);
+      font-weight:700;color:#e5e7eb;display:inline-flex;align-items:center}
+.arrow{width:38px;height:38px;border-radius:10px;background:rgba(255,255,255,.12);display:grid;place-items:center;
+       border:1px solid rgba(255,255,255,.16);margin:0 8px}
+.sep{height:1px;background:rgba(255,255,255,.08);margin:12px 0}
+.banner{padding:10px 14px;border-radius:12px;display:inline-flex;align-items:center;gap:.6rem;font-weight:700}
+.banner.ok{background:rgba(16,185,129,.12); color:#a7f3d0; border:1px solid rgba(16,185,129,.25)}
+.banner.warn{background:rgba(245,158,11,.12); color:#fde68a; border:1px solid rgba(245,158,11,.25)}
 .small{color:var(--muted);font-size:.9rem}
-.badge{padding:6px 10px;border-radius:9999px;font-weight:700;color:#fff}
-.badge.green{background:linear-gradient(90deg,#10b981,#059669)}
-.badge.red{background:linear-gradient(90deg,#ef4444,#b91c1c)}
-.badge.blue{background:linear-gradient(90deg,#06b6d4,#0ea5b7)}
-.sep{height:1px;background:rgba(255,255,255,0.03);margin:12px 0}
+.route{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.ticket{display:grid;grid-template-columns:1.2fr .8fr;gap:16px}
+.codebox{background:#0b1220;border:1px dashed rgba(255,255,255,.15);border-radius:12px;padding:10px}
 </style>
 """, unsafe_allow_html=True)
 
-# ===============================
-# Helper utils
-# ===============================
-STOPWORDS = {"hospital","medical","college","institute","university","center","centre","clinic","and"}
+def severity_badge(sev:str)->str:
+    color = {"Mild":"green","Moderate":"amber","Severe":"red","Very Severe":"red"}.get(sev,"blue")
+    return f'<span class="badge {color}">{sev}</span>'
 
-def norm_key(s: str) -> str:
-    s = str(s).lower().strip().replace("&"," and ")
-    s = re.sub(r"[^a-z0-9\s]"," ", s)
-    tokens = [t for t in s.split() if t and t not in STOPWORDS]
-    return "".join(tokens)
+def resource_badge(res:str)->str:
+    color = "red" if res=="ICU" else "blue"
+    return f'<span class="badge {color}">{res}</span>'
 
+def availability_badge(txt:str)->str:
+    if txt == "Yes": color = "green"
+    elif "No vacancy" in txt: color = "amber"
+    else: color = "blue"
+    return f'<span class="badge {color}">{txt}</span>'
+
+def sev_percent(sev:str)->int:
+    return {"Mild":25,"Moderate":50,"Severe":75,"Very Severe":100}.get(sev,50)
+
+# ===============================
+# Utilities
+# ===============================
 def ensure_df(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     if isinstance(df, pd.DataFrame):
         df = df.dropna(axis=0, how="all").dropna(axis=1, how="all")
@@ -84,10 +110,70 @@ def autodetect(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
                 return c
     return None
 
+def parse_date_series(s: pd.Series) -> pd.Series:
+    def _one(x):
+        if isinstance(x, (pd.Timestamp, datetime)): return pd.to_datetime(x).date()
+        try: return pd.to_datetime(x, errors="coerce").date()
+        except: return pd.NaT
+    return s.apply(_one)
+
+def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy(); df.columns = [str(c).strip() for c in df.columns]
+    if df.shape[1] > 2:
+        df = df.set_index(df.columns[0])
+        for c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
+        return df.combine_first(df.T)
+    raise ValueError("Could not interpret Location matrix format.")
+
+STOPWORDS = {"hospital","medical","college","institute","university","center","centre","clinic","and"}
+def norm_key(s: str) -> str:
+    s = str(s).lower().strip().replace("&"," and ")
+    s = re.sub(r"[^a-z0-9\s]"," ", s)
+    tokens = [t for t in s.split() if t and t not in STOPWORDS]
+    return "".join(tokens)
+
+def build_name_maps(availability, dist_mat, ui_list):
+    avail_names = sorted(set(availability.index.get_level_values(0).tolist()))
+    dm_names = sorted(set(map(str, dist_mat.index.tolist())) | set(map(str, dist_mat.columns.tolist())))
+    ui_names = list(ui_list)
+
+    avail_by_key = {norm_key(a): a for a in avail_names}
+    dm_by_key    = {norm_key(d): d for d in dm_names}
+
+    dm_to_av = {}
+    for d in dm_names:
+        kd = norm_key(d)
+        if kd in avail_by_key: dm_to_av[d] = avail_by_key[kd]
+        else:
+            m = get_close_matches(kd, list(avail_by_key.keys()), n=1, cutoff=0.6)
+            dm_to_av[d] = avail_by_key[m[0]] if m else None
+
+    ui_to_dm, ui_to_av = {}, {}
+    for u in ui_names:
+        ku = norm_key(u)
+        if ku in dm_by_key: ui_to_dm[u] = dm_by_key[ku]
+        else:
+            m = get_close_matches(ku, list(dm_by_key.keys()), n=1, cutoff=0.6)
+            ui_to_dm[u] = dm_by_key[m[0]] if m else None
+
+        if ku in avail_by_key: ui_to_av[u] = avail_by_key[ku]
+        else:
+            m2 = get_close_matches(ku, list(avail_by_key.keys()), n=1, cutoff=0.6)
+            ui_to_av[u] = avail_by_key[m2[0]] if m2 else None
+    return dm_to_av, ui_to_dm, ui_to_av
+
 # ===============================
-# Severity & resource logic
+# Severity logic (research-based bins you requested)
 # ===============================
 def compute_platelet_score(platelet: int) -> int:
+    """
+    Platelet score bins:
+      ≥150k → 0
+      100–149k → 1
+      50–99k  → 2
+      20–49k  → 3
+      <20k    → 4
+    """
     if platelet >= 150_000: return 0
     if platelet >= 100_000: return 1
     if platelet >= 50_000:  return 2
@@ -95,6 +181,12 @@ def compute_platelet_score(platelet: int) -> int:
     return 4
 
 def compute_severity_score(age: int, ns1: int, igm: int, igg: int, platelet: int) -> tuple[int, int]:
+    """
+    Composite = round(PlateletScore + AgeWeight + SecondaryWeight), capped at 4
+      AgeWeight: +1 if age < 15 or age > 60
+      SecondaryWeight: +1 if IgG=1 and (NS1=1 or IgM=1)
+    Returns (platelet_score, severity_score)
+    """
     p_score = compute_platelet_score(platelet)
     age_weight = 1 if (age < 15 or age > 60) else 0
     secondary = 1 if (igg == 1 and (ns1 == 1 or igm == 1)) else 0
@@ -102,6 +194,12 @@ def compute_severity_score(age: int, ns1: int, igm: int, igg: int, platelet: int
     return p_score, severity_score
 
 def verdict_from_score(score: int) -> str:
+    """
+    0 -> Mild
+    1 -> Moderate
+    2 -> Severe
+    3–4 -> Very Severe
+    """
     if score >= 3: return "Very Severe"
     if score == 2: return "Severe"
     if score == 1: return "Moderate"
@@ -119,42 +217,48 @@ if not pred_file_path.exists() or not loc_file_path.exists():
     st.error("Required files not found in repo folder: 'Predicted dataset AIO.xlsx' and 'Location matrix.xlsx'")
     st.stop()
 
-raw_pred = ensure_df(pd.read_excel(pred_file_path))
-df_loc  = ensure_df(pd.read_excel(loc_file_path))
+df_pred_raw = ensure_df(pd.read_excel(pred_file_path))
+df_loc       = ensure_df(pd.read_excel(loc_file_path))
 
 # ===============================
-# Build availability and cumulative admitted pivot
+# Sidebar – Time resolution
 # ===============================
-def build_availability_and_cum(df: pd.DataFrame, granularity: str, interp_method: str):
-    df = df.copy()
+st.sidebar.header("⏱️ Time Resolution")
+granularity = st.sidebar.selectbox("Time granularity", ["Daily","Weekly","Monthly"], index=0)
+interp_method = st.sidebar.selectbox("Interpolation (when expanding)", ["linear","ffill"], index=0)
+
+# ===============================
+# Build availability with expansion
+# ===============================
+def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
+                                        granularity: str,
+                                        interp_method: str) -> pd.DataFrame:
+    df = df_pred_raw.copy()
     hospital_col = autodetect(df, ["hospital","hospital name"])
     if not hospital_col: raise ValueError("Couldn't detect hospital column in predictions.")
     df["_Hospital"] = df[hospital_col].astype(str).str.strip()
 
     date_col  = autodetect(df, ["date"])
-    year_col  = autodetect(df, ["year"]) 
-    month_col = autodetect(df, ["month"]) 
-    day_col   = autodetect(df, ["day"]) 
+    year_col  = autodetect(df, ["year"])
+    month_col = autodetect(df, ["month"])
+    day_col   = autodetect(df, ["day"])
 
     if date_col:
         df["_Date"] = pd.to_datetime(df[date_col], errors="coerce")
     elif year_col and month_col:
-        if day_col:
-            df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
-        else:
-            df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" + df[month_col].astype(int).astype(str) + "-01", errors="coerce")
+        if day_col: df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
+        else: df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" +
+                                           df[month_col].astype(int).astype(str) + "-01", errors="coerce")
     else:
         raise ValueError("Provide either a Date column or (Year & Month) in predictions.")
-
     df = df.dropna(subset=["_Date"]); df["_Date"] = df["_Date"].dt.normalize()
 
-    # availability columns
-    pred_normal_avail_col = autodetect(df, ["predicted normal beds available","normal beds available (pred)","beds available predicted","pred beds"]) 
-    pred_icu_avail_col    = autodetect(df, ["predicted icu beds available","icu beds available (pred)","icu available predicted","pred icu"]) 
-    beds_total_col  = autodetect(df, ["beds total","total beds"]) 
-    icu_total_col   = autodetect(df, ["icu beds total","total icu"]) 
-    beds_occ_col    = autodetect(df, ["beds occupied","occupied beds"]) 
-    icu_occ_col     = autodetect(df, ["icu beds occupied","occupied icu"]) 
+    pred_normal_avail_col = autodetect(df, ["predicted normal beds available","normal beds available (pred)","beds available predicted","pred beds"])
+    pred_icu_avail_col    = autodetect(df, ["predicted icu beds available","icu beds available (pred)","icu available predicted","pred icu"])
+    beds_total_col  = autodetect(df, ["beds total","total beds"])
+    icu_total_col   = autodetect(df, ["icu beds total","total icu"])
+    beds_occ_col    = autodetect(df, ["beds occupied","occupied beds"])
+    icu_occ_col     = autodetect(df, ["icu beds occupied","occupied icu"])
 
     if pred_normal_avail_col and pred_icu_avail_col:
         df["_BedsAvail"] = pd.to_numeric(df[pred_normal_avail_col], errors="coerce")
@@ -164,59 +268,44 @@ def build_availability_and_cum(df: pd.DataFrame, granularity: str, interp_method
         df["_ICUAvail"]  = pd.to_numeric(df[icu_total_col],  errors="coerce") - pd.to_numeric(df[icu_occ_col],  errors="coerce")
     else:
         raise ValueError("Could not find predicted availability columns or totals/occupied fallback.")
-
     df["_BedsAvail"] = df["_BedsAvail"].fillna(0); df["_ICUAvail"] = df["_ICUAvail"].fillna(0)
 
-    # cumulative admitted column detection (the user's YTD column)
-    cum_col = autodetect(df, ["total admitted till date","total admitted","admitted till date","total admitted till"])
-
-    # prepare availability time series (daily/weekly/monthly) similar to earlier
     if granularity == "Monthly":
         df["_Month"] = df["_Date"].dt.to_period("M").dt.to_timestamp()
         grouped = (df.groupby(["_Hospital","_Month"], as_index=False)[["_BedsAvail","_ICUAvail"]].mean())
         availability = (grouped.set_index(["_Hospital","_Month"]).sort_index())
         availability.index = availability.index.set_names(["_Hospital","_Date"])
+        return availability
+
+    # Expand to Daily, then weekly if needed
+    df_ts = df.set_index("_Date")
+    beds_piv = df_ts.pivot_table(index="_Date", columns="_Hospital", values="_BedsAvail", aggfunc="mean")
+    icu_piv  = df_ts.pivot_table(index="_Date", columns="_Hospital", values="_ICUAvail",  aggfunc="mean")
+    full_idx = pd.date_range(start=beds_piv.index.min(), end=beds_piv.index.max(), freq="D")
+    beds_piv = beds_piv.reindex(full_idx); icu_piv = icu_piv.reindex(full_idx)
+
+    if interp_method == "linear":
+        beds_piv = beds_piv.interpolate(method="time", limit_direction="both")
+        icu_piv  = icu_piv.interpolate(method="time", limit_direction="both")
     else:
-        df_ts = df.set_index("_Date")
-        beds_piv = df_ts.pivot_table(index="_Date", columns="_Hospital", values="_BedsAvail", aggfunc="mean")
-        icu_piv  = df_ts.pivot_table(index="_Date", columns="_Hospital", values="_ICUAvail",  aggfunc="mean")
-        full_idx = pd.date_range(start=beds_piv.index.min(), end=beds_piv.index.max(), freq="D")
-        beds_piv = beds_piv.reindex(full_idx); icu_piv = icu_piv.reindex(full_idx)
-        if interp_method == "linear":
-            beds_piv = beds_piv.interpolate(method="time", limit_direction="both")
-            icu_piv  = icu_piv.interpolate(method="time", limit_direction="both")
-        else:
-            beds_piv = beds_piv.ffill().bfill(); icu_piv = icu_piv.ffill().bfill()
-        if granularity == "Weekly":
-            beds_piv = beds_piv.resample("W-MON").mean()
-            icu_piv  = icu_piv.resample("W-MON").mean()
-        beds_long = beds_piv.stack(dropna=False).rename("_BedsAvail").to_frame()
-        icu_long  = icu_piv.stack(dropna=False).rename("_ICUAvail").to_frame()
-        long_df = beds_long.join(icu_long, how="outer").reset_index()
-        long_df.columns = ["_Date","_Hospital","_BedsAvail","_ICUAvail"]
-        long_df["_BedsAvail"] = long_df["_BedsAvail"].fillna(0).clip(lower=0)
-        long_df["_ICUAvail"]  = long_df["_ICUAvail"].fillna(0).clip(lower=0)
-        availability = (long_df.groupby(["_Hospital","_Date"], as_index=False)[["_BedsAvail","_ICUAvail"]].mean().set_index(["_Hospital","_Date"]).sort_index())
+        beds_piv = beds_piv.ffill().bfill(); icu_piv = icu_piv.ffill().bfill()
 
-    # build cumulative pivot if column exists
-    cum_pivot = None
-    if cum_col:
-        tmp = df[["_Hospital","_Date", cum_col]].copy()
-        tmp[cum_col] = pd.to_numeric(tmp[cum_col], errors="coerce").fillna(0)
-        cum_pivot = tmp.pivot_table(index="_Date", columns="_Hospital", values=cum_col, aggfunc="max").sort_index()
-        # reindex to full daily index and forward fill
-        full_idx = pd.date_range(start=cum_pivot.index.min(), end=cum_pivot.index.max(), freq="D")
-        cum_pivot = cum_pivot.reindex(full_idx).ffill().fillna(0)
+    if granularity == "Weekly":
+        beds_piv = beds_piv.resample("W-MON").mean()
+        icu_piv  = icu_piv.resample("W-MON").mean()
 
-    return availability, cum_pivot
-
-# Sidebar controls
-st.sidebar.header("⏱️ Time Resolution")
-granularity = st.sidebar.selectbox("Time granularity", ["Daily","Weekly","Monthly"], index=0)
-interp_method = st.sidebar.selectbox("Interpolation (when expanding)", ["linear","ffill"], index=0)
+    beds_long = beds_piv.stack(dropna=False).rename("_BedsAvail").to_frame()
+    icu_long  = icu_piv.stack(dropna=False).rename("_ICUAvail").to_frame()
+    long_df = beds_long.join(icu_long, how="outer").reset_index()
+    long_df.columns = ["_Date","_Hospital","_BedsAvail","_ICUAvail"]
+    long_df["_BedsAvail"] = long_df["_BedsAvail"].fillna(0).clip(lower=0)
+    long_df["_ICUAvail"]  = long_df["_ICUAvail"].fillna(0).clip(lower=0)
+    availability = (long_df.groupby(["_Hospital","_Date"], as_index=False)[["_BedsAvail","_ICUAvail"]]
+                    .mean().set_index(["_Hospital","_Date"]).sort_index())
+    return availability
 
 try:
-    availability, cum_pivot = build_availability_and_cum(raw_pred, granularity, interp_method)
+    availability = build_availability_from_predictions(df_pred_raw, granularity, interp_method)
 except Exception as e:
     st.error(f"Error building availability: {e}")
     st.stop()
@@ -224,50 +313,21 @@ except Exception as e:
 # ===============================
 # Distance matrix + name maps
 # ===============================
-def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy(); df.columns = [str(c).strip() for c in df.columns]
-    if df.shape[1] > 2:
-        df = df.set_index(df.columns[0])
-        for c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
-        return df.combine_first(df.T)
-    raise ValueError("Could not interpret Location matrix format.")
-
-DM = build_distance_matrix(df_loc)
-
-# name maps between DM sheet and availability
-avail_names = sorted(set(availability.index.get_level_values(0).tolist()))
-dm_names = sorted(set(map(str, DM.index.tolist())) | set(map(str, DM.columns.tolist())))
-
-avail_by_key = {norm_key(a): a for a in avail_names}
-dm_by_key    = {norm_key(d): d for d in dm_names}
-
-DM_TO_AV = {}
-for d in dm_names:
-    kd = norm_key(d)
-    if kd in avail_by_key: DM_TO_AV[d] = avail_by_key[kd]
-    else:
-        m = get_close_matches(kd, list(avail_by_key.keys()), n=1, cutoff=0.6)
-        DM_TO_AV[d] = avail_by_key[m[0]] if m else None
-
-UI_TO_DM = {}
-UI_TO_AV = {}
-for u in HOSPITALS_UI:
-    ku = norm_key(u)
-    if ku in dm_by_key: UI_TO_DM[u] = dm_by_key[ku]
-    else:
-        m = get_close_matches(ku, list(dm_by_key.keys()), n=1, cutoff=0.6)
-        UI_TO_DM[u] = dm_by_key[m[0]] if m else None
-    if ku in avail_by_key: UI_TO_AV[u] = avail_by_key[ku]
-    else:
-        m2 = get_close_matches(ku, list(avail_by_key.keys()), n=1, cutoff=0.6)
-        UI_TO_AV[u] = avail_by_key[m2[0]] if m2 else None
+dist_mat = build_distance_matrix(df_loc)
+DM_TO_AV, UI_TO_DM, UI_TO_AV = build_name_maps(availability, dist_mat, HOSPITALS_UI)
 
 # ===============================
-# Allocation helpers and session state
+# Allocation helpers
 # ===============================
 if "reservations" not in st.session_state:
     st.session_state["reservations"] = {}
+
+if "served" not in st.session_state:
+    # key: (hospital_av_name, 'YYYY-MM') -> count
+    st.session_state["served"] = {}
+
 if "reroute_log" not in st.session_state:
+    # list of dicts: {"date": date, "original": original_ui, "assigned": assigned_av, "month": "YYYY-MM"}
     st.session_state["reroute_log"] = []
 
 def get_remaining(hospital: str, date, bed_type: str) -> int:
@@ -285,9 +345,9 @@ def reserve_bed(hospital: str, date, bed_type: str, n: int = 1):
 def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
     start_dm = UI_TO_DM.get(start_ui_name)
     checks = []
-    if not start_dm or start_dm not in DM.index:
+    if not start_dm or start_dm not in dist_mat.index:
         return None, None, "Hospital not found in distance matrix", checks
-    row = DM.loc[start_dm].astype(float).dropna().sort_values()
+    row = dist_mat.loc[start_dm].astype(float).dropna().sort_values()
     for neighbor_dm, dist in row.items():
         if neighbor_dm == start_dm: continue
         neighbor_av = DM_TO_AV.get(neighbor_dm)
@@ -299,44 +359,42 @@ def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
             return neighbor_av, float(dist), None, checks
     return None, None, "No hospitals with vacancy found", checks
 
-# ===============================
-# New: functions using cumulative admitted (monthly counts)
-# ===============================
+# ======= New: served / reroute helpers =========
+def month_str_from_date(dt) -> str:
+    return pd.to_datetime(dt).strftime("%Y-%m")
 
-def month_start(dt):
-    dt = pd.to_datetime(dt)
-    return pd.to_datetime(dt.strftime('%Y-%m-01'))
+def increment_served(hospital_av_name: str, date) -> None:
+    """Increment served count for the hospital for the month of `date`."""
+    if not hospital_av_name:
+        return
+    m = month_str_from_date(date)
+    key = (hospital_av_name, m)
+    st.session_state["served"][key] = st.session_state["served"].get(key, 0) + 1
 
-def cum_on_date(hospital_av_name: str, date) -> float:
-    """Return cumulative admitted (YTD) for hospital at exact date using cum_pivot; if missing, choose last available before date."""
-    if cum_pivot is None or hospital_av_name not in cum_pivot.columns:
-        return 0.0
-    d = pd.to_datetime(date)
-    if d in cum_pivot.index:
-        return float(cum_pivot.loc[d, hospital_av_name])
-    # pick last index <= d
-    idx = cum_pivot.index[cum_pivot.index <= d]
-    if len(idx) == 0: return 0.0
-    return float(cum_pivot.loc[idx[-1], hospital_av_name])
+def log_reroute(original_ui: str, assigned_av: str, date) -> None:
+    m = month_str_from_date(date)
+    st.session_state["reroute_log"].append({
+        "date": pd.to_datetime(date).date().isoformat(),
+        "original_ui": original_ui,
+        "assigned_av": assigned_av,
+        "month": m
+    })
 
-def monthly_count_to_date(hospital_av_name: str, date) -> int:
-    """Return admitted count from month start up to and including `date` for this hospital."""
-    d = pd.to_datetime(date)
-    ms = month_start(d)
-    prev_day = ms - timedelta(days=1)
-    cum_at_date = cum_on_date(hospital_av_name, d)
-    cum_before_month = cum_on_date(hospital_av_name, prev_day)
-    return max(0, int(round(cum_at_date - cum_before_month)))
+def get_month_served(hospital_av_name: str, month_str: str) -> int:
+    return st.session_state["served"].get((hospital_av_name, month_str), 0)
 
-def monthly_total_for_month(hospital_av_name: str, month_dt) -> int:
-    """Return total admitted for the whole month (month_dt is any date in month)."""
-    # last day of month
-    m = pd.to_datetime(month_dt)
-    last_day = (m + pd.offsets.MonthEnd(0)).normalize()
-    return monthly_count_to_date(hospital_av_name, last_day)
+def served_df_for_month(month_str: str) -> pd.DataFrame:
+    rows = []
+    for (h, m), cnt in st.session_state["served"].items():
+        if m == month_str:
+            rows.append({"Hospital": h, "Served": cnt})
+    if not rows:
+        return pd.DataFrame(columns=["Hospital","Served"])
+    df = pd.DataFrame(rows).sort_values("Served", ascending=False).reset_index(drop=True)
+    return df
 
 # ===============================
-# UI – Patient inputs (form)
+# UI – Patient inputs
 # ===============================
 all_dates = sorted(list(set([d for _, d in availability.index])))
 min_d, max_d = min(all_dates), max(all_dates)
@@ -368,6 +426,7 @@ note = ""
 debug_checks = []
 
 if submit:
+    # ---- New severity logic ----
     p_score, s_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
     severity = verdict_from_score(s_score)
     resource = required_resource(severity)
@@ -386,186 +445,225 @@ if submit:
 
     if assigned_av:
         reserve_bed(assigned_av, date_input, bed_key, 1)
-        # log reroute if different
+        # increment served count for assigned hospital
+        increment_served(assigned_av, date_input)
+        # if rerouted (assigned different from start_av), log reroute
         if assigned_av != (start_av or hospital_ui):
-            st.session_state["reroute_log"].append({
-                "date": pd.to_datetime(date_input).date().isoformat(),
-                "original_ui": hospital_ui,
-                "assigned_av": assigned_av,
-                "month": pd.to_datetime(date_input).strftime('%Y-%m')
-            })
+            log_reroute(hospital_ui, assigned_av, date_input)
 
     # ---------- Allocation Ticket UI ----------
     st.subheader("Allocation Result")
-    st.markdown('<div class="card" style="padding:18px">', unsafe_allow_html=True)
-    col_a, col_b, col_c, col_d = st.columns(4)
-    with col_a:
-        st.markdown(f"<div class='kpi'>{s_score}</div><div class='kpi-label'>Severity Score</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='small'>{verdict_from_score(s_score)}</div>", unsafe_allow_html=True)
-    with col_b:
-        st.markdown(f"<div class='kpi'>{resource}</div><div class='kpi-label'>Resource Needed</div>", unsafe_allow_html=True)
-    with col_c:
-        st.markdown(f"<div class='kpi'>{pd.to_datetime(date_input).date()}</div><div class='kpi-label'>Date</div>", unsafe_allow_html=True)
-    with col_d:
-        dist_txt = f"{float(rerouted_distance):.1f} km" if rerouted_distance is not None else "—"
-        st.markdown(f"<div class='kpi'>{dist_txt}</div><div class='kpi-label'>Travel Distance</div>", unsafe_allow_html=True)
+    st.markdown('<div class="grid grid-4">', unsafe_allow_html=True)
+
+    # 1) Severity score card
+    st.markdown(f'''
+      <div class="card">
+        <div class="kpi">{s_score}</div>
+        <div class="kpi-label">Severity Score</div>
+        <div class="ribbon">{severity_badge(severity)}</div>
+      </div>
+    ''', unsafe_allow_html=True)
+
+    # 2) Resource needed card (replaces Platelet Score card)
+    st.markdown(f'''
+      <div class="card">
+        <div class="kpi">{resource}</div>
+        <div class="kpi-label">Resource Needed</div>
+        <div class="ribbon">{resource_badge(resource)}</div>
+      </div>
+    ''', unsafe_allow_html=True)
+
+    # 3) Date card
+    st.markdown(f'''
+      <div class="card">
+        <div class="kpi">{pd.to_datetime(date_input).date()}</div>
+        <div class="kpi-label">Date</div>
+        <div class="ribbon"><span class="badge blue">{granularity}</span></div>
+      </div>
+    ''', unsafe_allow_html=True)
+
+    # 4) Travel distance card
+    dist_txt = f"{float(rerouted_distance):.1f} km" if rerouted_distance is not None else "—"
+    st.markdown(f'''
+      <div class="card">
+        <div class="kpi">{dist_txt}</div>
+        <div class="kpi-label">Travel Distance</div>
+        <div class="ribbon"><span class="badge blue">{interp_method if granularity!='Monthly' else 'N/A'}</span></div>
+      </div>
+    ''', unsafe_allow_html=True)
+
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # ticket body
-    st.markdown('<div class="card" style="margin-top:12px">', unsafe_allow_html=True)
-    left, right = st.columns([1.3,0.9])
+    # Ticket
+    st.markdown('<div class="card ticket">', unsafe_allow_html=True)
+    left, right = st.columns([1.2,.8], gap="medium")
     with left:
+        # availability banner
         if available_status == "Yes":
-            st.success("✅ Bed available at selected hospital")
+            st.markdown('<div class="banner ok">✅ Bed available at selected hospital</div>', unsafe_allow_html=True)
         else:
-            st.warning("⚠️ No vacancy available here — finding nearest option…")
+            st.markdown('<div class="banner warn">⚠️ No vacancy available here — finding nearest option…</div>', unsafe_allow_html=True)
         st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
-        st.write(f"**Hospital Tried:** {hospital_ui}")
-        st.write(f"**Assigned Hospital:** {assigned_av if assigned_av else '—'}")
-        st.caption(f"Note: {note}")
+
+        # Route lane
+        tried = hospital_ui
+        st.markdown(f"**Hospital Tried:** {tried}", unsafe_allow_html=True)
+        st.markdown('<div class="route" style="margin-top:8px">', unsafe_allow_html=True)
+        st.markdown(f'<span class="pill">{tried}</span>', unsafe_allow_html=True)
+        st.markdown('<div class="arrow">➡️</div>', unsafe_allow_html=True)
+        final_chip = f'<span class="pill">{assigned_av if assigned_av else "—"}</span>'
+        st.markdown(final_chip, unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.caption(f"Note: **{note}**")
+
     with right:
+        st.markdown("**Summary**")
+        st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
         summary = {
             "Severity": severity,
             "Resource": resource,
             "Severity Score": s_score,
-            "Hospital Tried": hospital_ui,
+            "Hospital Tried": tried,
             "Available at Current Hospital": available_status,
             "Assigned Hospital": assigned_av,
             "Distance (km)": float(rerouted_distance) if rerouted_distance is not None else None
         }
+        st.markdown('<div class="codebox">', unsafe_allow_html=True)
         st.json(summary)
+        st.markdown('</div>', unsafe_allow_html=True)
+
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # debug
+    # Progress (visual feel)
+    st.progress(sev_percent(severity))
+
+    # Debug drawer
     with st.expander("🧪 Debug: Nearest Hospitals Checked"):
         if debug_checks:
-            st.dataframe(pd.DataFrame(debug_checks), use_container_width=True)
+            dbg = pd.DataFrame(debug_checks)
+            if assigned_av:
+                dbg["Allocated"] = dbg["Neighbor Hospital"].eq(assigned_av)
+                dbg = dbg.sort_values(["Allocated","Remaining Beds/ICU"], ascending=[False,False])
+            st.dataframe(dbg, use_container_width=True)
         else:
             st.write("No neighbor checks — assigned at selected hospital.")
 
 # ===============================
-# Dashboard — interactive & monthly (uses cumulative column)
+# Dashboard: show hospital month info
 # ===============================
 st.markdown("---")
-st.header("📊 Interactive Hospital Dashboard (Monthly view)")
+st.header("📊 Hospital Monthly Dashboard")
 
+# Select a hospital for dashboard view (allow choosing UI hospital or direct availability hospital)
 dash_col1, dash_col2 = st.columns([1,1])
 with dash_col1:
     dashboard_ui_hospital = st.selectbox("Choose hospital to view dashboard", HOSPITALS_UI, index=0)
 with dash_col2:
     dashboard_date = st.date_input("View month (pick any date in month)", value=max_d, min_value=min_d, max_value=max_d)
 
-dashboard_av = UI_TO_AV.get(dashboard_ui_hospital) or dashboard_ui_hospital
-month_key = pd.to_datetime(dashboard_date).strftime('%Y-%m')
+dashboard_start_av = UI_TO_AV.get(dashboard_ui_hospital) or dashboard_ui_hospital
+dashboard_month = month_str_from_date(dashboard_date)
 
-# compute monthly served using cumulative pivot (to-date in-month)
-served_to_date = monthly_count_to_date(dashboard_av, dashboard_date) if 'cum_pivot' in locals() else 0
-served_full_month = monthly_total_for_month(dashboard_av, dashboard_date) if 'cum_pivot' in locals() else 0
+# Helper to get availability numbers safely
+def get_avail_counts(hospital_av_name: str, date) -> dict:
+    key = (hospital_av_name, pd.to_datetime(date).normalize())
+    out = {"beds_available": None, "icu_available": None}
+    if key in availability.index:
+        row = availability.loc[key]
+        out["beds_available"] = int(np.floor(float(row["_BedsAvail"]))) if not pd.isna(row["_BedsAvail"]) else 0
+        out["icu_available"]  = int(np.floor(float(row["_ICUAvail"])))  if not pd.isna(row["_ICUAvail"])  else 0
+    return out
 
-# availability on selected day
-key = (dashboard_av, pd.to_datetime(dashboard_date).normalize())
-if key in availability.index:
-    av_row = availability.loc[key]
-    beds_avail = int(np.floor(float(av_row['_BedsAvail'])))
-    icu_avail  = int(np.floor(float(av_row['_ICUAvail'])))
+# Dashboard for selected UI hospital
+st.markdown(f"### Dashboard — {dashboard_ui_hospital}  (month: {dashboard_month})")
+h_avail = get_avail_counts(dashboard_start_av, dashboard_date)
+served_count = get_month_served(dashboard_start_av, dashboard_month)
+
+col1, col2, col3 = st.columns([1,1,1])
+with col1:
+    st.markdown(f'''
+      <div class="card">
+        <div class="kpi">{h_avail["beds_available"] if h_avail["beds_available"] is not None else "—"}</div>
+        <div class="kpi-label">Normal Beds Available (on selected day)</div>
+      </div>
+    ''', unsafe_allow_html=True)
+with col2:
+    st.markdown(f'''
+      <div class="card">
+        <div class="kpi">{h_avail["icu_available"] if h_avail["icu_available"] is not None else "—"}</div>
+        <div class="kpi-label">ICU Beds Available (on selected day)</div>
+      </div>
+    ''', unsafe_allow_html=True)
+with col3:
+    st.markdown(f'''
+      <div class="card">
+        <div class="kpi">{served_count}</div>
+        <div class="kpi-label">Total Patients Served (this month)</div>
+      </div>
+    ''', unsafe_allow_html=True)
+
+st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+# If the last allocation resulted in reroute to another hospital, show rerouted dashboards
+# We'll display any hospitals assigned in the same month as the dashboard_date that were assigned as reroutes
+reroutes_this_month = [r for r in st.session_state["reroute_log"] if r["month"] == dashboard_month]
+
+if reroutes_this_month:
+    st.markdown("#### Rerouted Assignments (this month)")
+    # Aggregate assigned hospitals that received reroutes this month
+    assigned_counts = {}
+    for r in reroutes_this_month:
+        assigned_counts[r["assigned_av"]] = assigned_counts.get(r["assigned_av"], 0) + 1
+    agg_rows = [{"Assigned Hospital":k, "Rerouted Count":v} for k,v in assigned_counts.items()]
+    df_rerouted = pd.DataFrame(agg_rows).sort_values("Rerouted Count", ascending=False).reset_index(drop=True)
+    st.dataframe(df_rerouted, use_container_width=True)
+
+    st.markdown("#### Rerouted Hospital Dashboards")
+    for assigned_h in assigned_counts.keys():
+        st.markdown(f"**{assigned_h}** — total rerouted to here this month: {assigned_counts[assigned_h]}")
+        av = get_avail_counts(assigned_h, dashboard_date)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(f'''
+              <div class="card">
+                <div class="kpi">{av["beds_available"] if av["beds_available"] is not None else "—"}</div>
+                <div class="kpi-label">Normal Beds Available (on selected day)</div>
+              </div>
+            ''', unsafe_allow_html=True)
+        with c2:
+            st.markdown(f'''
+              <div class="card">
+                <div class="kpi">{get_month_served(assigned_h, dashboard_month)}</div>
+                <div class="kpi-label">Patients Served (this month)</div>
+              </div>
+            ''', unsafe_allow_html=True)
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 else:
-    beds_avail = None; icu_avail = None
+    st.info("No reroutes logged for the selected month.")
 
-# top KPI row
-kp1, kp2, kp3, kp4 = st.columns([1,1,1,1])
-with kp1:
-    st.markdown(f"<div class='card'><div class='kpi'>{served_to_date}</div><div class='kpi-label'>Patients this month (to selected date)</div></div>", unsafe_allow_html=True)
-with kp2:
-    st.markdown(f"<div class='card'><div class='kpi'>{served_full_month}</div><div class='kpi-label'>Patients this month (full month)</div></div>", unsafe_allow_html=True)
-with kp3:
-    st.markdown(f"<div class='card'><div class='kpi'>{beds_avail if beds_avail is not None else '—'}</div><div class='kpi-label'>Normal beds available (selected day)</div></div>", unsafe_allow_html=True)
-with kp4:
-    st.markdown(f"<div class='card'><div class='kpi'>{icu_avail if icu_avail is not None else '—'}</div><div class='kpi-label'>ICU beds available (selected day)</div></div>", unsafe_allow_html=True)
-
-st.markdown("\n")
-
-# Time series visualizations if cumulative pivot exists
-if cum_pivot is not None:
-    # prepare a timeseries for this hospital
-    hos = dashboard_av
-    if hos in cum_pivot.columns:
-        ts = cum_pivot[hos].reset_index().rename(columns={'index':'Date', hos:'Cumulative'})
-        # daily admissions (diff)
-        ts['Daily'] = ts['Cumulative'].diff().fillna(ts['Cumulative']).clip(lower=0)
-        ts['Month'] = ts['Date'].dt.to_period('M').dt.to_timestamp()
-
-        # filter to 6 months window for nicer display
-        end = pd.to_datetime(dashboard_date)
-        start = end - pd.DateOffset(months=5)
-        ts_win = ts[(ts['Date']>=start)&(ts['Date']<=end)]
-
-        fig1 = px.line(ts_win, x='Date', y='Cumulative', title=f'Cumulative admissions — {dashboard_ui_hospital}', labels={'Cumulative':'Cumulative admitted'})
-        fig2 = px.bar(ts_win, x='Date', y='Daily', title=f'Daily admissions (derived) — {dashboard_ui_hospital}', labels={'Daily':'Admissions'})
-
-        st.plotly_chart(fig1, use_container_width=True)
-        st.plotly_chart(fig2, use_container_width=True)
-    else:
-        st.info("No cumulative admitted data available for this hospital in predictions.")
+# Overall leaderboard for the selected month
+st.markdown("### Monthly Leaderboard — Patients Served")
+served_df = served_df_for_month(dashboard_month)
+if not served_df.empty:
+    # show bar chart and table
+    st.bar_chart(data=served_df.set_index("Hospital")["Served"])
+    st.dataframe(served_df, use_container_width=True)
 else:
-    st.info("Dataset does not contain a cumulative 'Total Admitted Till Date' column — monthly counts cannot be computed automatically.")
+    st.write("No patients served data for this month yet.")
 
-# Reroute dashboards (show aggregated reroutes in selected month)
-st.markdown('---')
-st.subheader('Reroute Summary')
-if st.session_state['reroute_log']:
-    df_r = pd.DataFrame(st.session_state['reroute_log'])
-    df_month = df_r[df_r['month']==month_key]
-    if not df_month.empty:
-        agg = df_month.groupby('assigned_av').size().reset_index(name='ReroutedCount').sort_values('ReroutedCount', ascending=False)
-        st.dataframe(agg, use_container_width=True)
-        # show small cards for top rerouted hospitals
-        for _, row in agg.iterrows():
-            hosp = row['assigned_av']
-            count = int(row['ReroutedCount'])
-            month_total = monthly_total_for_month(hosp, dashboard_date) if cum_pivot is not None else 'n/a'
-            st.markdown(f"**{hosp}** — rerouted here: {count} times this month — total admissions this month: {month_total}")
+# Reroute log (full)
+with st.expander("🔁 Full Reroute Log"):
+    if st.session_state["reroute_log"]:
+        st.dataframe(pd.DataFrame(st.session_state["reroute_log"]), use_container_width=True)
     else:
-        st.info('No reroutes recorded for the selected month yet.')
-else:
-    st.info('No reroute events logged yet.')
+        st.write("No reroute events logged yet.")
 
-# Monthly leaderboard across hospitals (based on cumulative pivot)
-st.markdown('---')
-st.subheader('Monthly Leaderboard — Patients (selected month)')
-if cum_pivot is not None:
-    # compute monthly totals for each hospital for the selected month
-    month_end = (pd.to_datetime(dashboard_date) + pd.offsets.MonthEnd(0)).normalize()
-    month_start_dt = month_start(dashboard_date)
-    results = []
-    for col in cum_pivot.columns:
-        cum_end = cum_on_date(col, month_end)
-        cum_before = cum_on_date(col, month_start_dt - timedelta(days=1))
-        results.append({'Hospital': col, 'PatientsThisMonth': max(0, int(round(cum_end - cum_before)))})
-    df_rank = pd.DataFrame(results).sort_values('PatientsThisMonth', ascending=False).reset_index(drop=True)
-    if not df_rank.empty:
-        fig = px.bar(df_rank.head(12), x='PatientsThisMonth', y='Hospital', orientation='h', title='Top hospitals this month')
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df_rank, use_container_width=True)
-    else:
-        st.write('No admissions recorded in dataset for this month.')
-else:
-    st.info('No cumulative admitted column found in dataset; cannot compute leaderboard.')
-
-# Optional: raw logs and reservation debug
-with st.expander('🔁 Full Reroute Log'):
-    if st.session_state['reroute_log']:
-        st.dataframe(pd.DataFrame(st.session_state['reroute_log']), use_container_width=True)
-    else:
-        st.write('No reroute events logged yet.')
-
-with st.expander('🗂️ Raw Reservations (debug)'):
-    if st.session_state['reservations']:
+# Quick raw reservations debug (optional)
+with st.expander("🗂️ Raw Reservations (debug)"):
+    if st.session_state["reservations"]:
         rows = []
-        for (h, date, bed_type), cnt in st.session_state['reservations'].items():
-            rows.append({'Hospital':h, 'Date': date, 'Bed Type': bed_type, 'Reserved': cnt})
-        st.dataframe(pd.DataFrame(rows).sort_values(['Date','Hospital']), use_container_width=True)
+        for (h, date, bed_type), cnt in st.session_state["reservations"].items():
+            rows.append({"Hospital":h, "Date": date, "Bed Type": bed_type, "Reserved": cnt})
+        st.dataframe(pd.DataFrame(rows).sort_values(["Date","Hospital"]), use_container_width=True)
     else:
-        st.write('No reservations yet.')
-
-# Footer note
-st.markdown('\n---\n*Note: Monthly "Patients this month" is derived from the dataset column that contains cumulative "Total Admitted Till Date" values. If your predictions file does not contain that column, monthly counts cannot be generated automatically.*')
+        st.write("No reservations yet.")
