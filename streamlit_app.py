@@ -3,8 +3,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
-import smtplib, ssl  # NEW: email
-from email.message import EmailMessage  # NEW: email
+import math
+import requests
+import smtplib, ssl
+from email.message import EmailMessage
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from functools import lru_cache
 from difflib import get_close_matches
 from datetime import datetime
 from pathlib import Path
@@ -191,7 +196,125 @@ def required_resource(severity: str) -> str:
     return "ICU" if severity in ("Severe", "Very Severe") else "General Bed"
 
 # ===============================
-# NEW: Email helpers (validator, HTML builder, sender)
+# No-key geocoding + distances (OSM + Haversine + optional OSRM)
+# ===============================
+def _contact_email_for_user_agent() -> str:
+    try:
+        return st.secrets.get("contact", {}).get("email", "dengue-allocator@example.com")
+    except Exception:
+        return "dengue-allocator@example.com"
+
+@lru_cache(maxsize=512)
+def geocode_nominatim(query: str):
+    if not query or not str(query).strip():
+        return None
+    url = "https://nominatim.openstreetmap.org/search"
+    headers = {"User-Agent": f"dscc-dengue-allocator/1.0 ({_contact_email_for_user_agent()})"}
+    params = {"q": query, "format": "json", "limit": 1}
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=15)
+        r.raise_for_status()
+        js = r.json()
+        if not js:
+            return None
+        lat = float(js[0]["lat"]); lon = float(js[0]["lon"])
+        return (lat, lon)
+    except Exception:
+        return None
+
+def haversine_km(lat1, lon1, lat2, lon2) -> float:
+    R = 6371.0088
+    φ1, φ2 = math.radians(lat1), math.radians(lat2)
+    dφ = math.radians(lat2 - lat1)
+    dλ = math.radians(lon2 - lon1)
+    a = math.sin(dφ/2)**2 + math.cos(φ1)*math.cos(φ2)*math.sin(dλ/2)**2
+    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1-a)))
+
+def osrm_drive(origin_ll, dest_ll):
+    if not origin_ll or not dest_ll:
+        return None
+    o_lat, o_lon = origin_ll; d_lat, d_lon = dest_ll
+    url = f"https://router.project-osrm.org/route/v1/driving/{o_lon},{o_lat};{d_lon},{d_lat}"
+    params = {"overview": "false", "alternatives": "false", "steps": "false", "annotations": "false"}
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        js = r.json()
+        if js.get("code") != "Ok" or not js.get("routes"):
+            return None
+        dist_km = js["routes"][0]["distance"] / 1000.0
+        dur_min = js["routes"][0]["duration"] / 60.0
+        return (dist_km, dur_min)
+    except Exception:
+        return None
+
+HOSPITAL_PLACES = {
+    "Dhaka Medical College Hospital": "Dhaka Medical College Hospital, Dhaka, Bangladesh",
+    "SSMC & Mitford Hospital": "SSMC & Mitford Hospital, Dhaka, Bangladesh",
+    "Bangladesh Shishu Hospital & Institute": "Bangladesh Shishu Hospital & Institute, Dhaka, Bangladesh",
+    "Shaheed Suhrawardy Medical College hospital": "Shaheed Suhrawardy Medical College Hospital, Dhaka, Bangladesh",
+    "Bangabandhu Shiekh Mujib Medical University": "BSMMU, Dhaka, Bangladesh",
+    "Police Hospital, Rajarbagh": "Police Hospital, Rajarbagh, Dhaka, Bangladesh",
+    "Mugda Medical College": "Mugda Medical College Hospital, Dhaka, Bangladesh",
+    "Bangladesh Medical College Hospital": "Bangladesh Medical College Hospital, Dhaka, Bangladesh",
+    "Holy Family Red Cresent Hospital": "Holy Family Red Crescent Medical College, Dhaka, Bangladesh",
+    "BIRDEM Hospital": "BIRDEM General Hospital, Dhaka, Bangladesh",
+    "Ibn Sina Hospital": "Ibn Sina Hospital Dhanmondi, Dhaka, Bangladesh",
+    "Square Hospital": "Square Hospital, Dhaka, Bangladesh",
+    "Samorita Hospital": "Samorita Hospital, Dhaka, Bangladesh",
+    "Central Hospital Dhanmondi": "Central Hospital, Dhanmondi, Dhaka, Bangladesh",
+    "Lab Aid Hospital": "Labaid Hospital, Dhaka, Bangladesh",
+    "Green Life Medical Hospital": "Green Life Medical College Hospital, Dhaka, Bangladesh",
+    "Sirajul Islam Medical College Hospital": "Sirajul Islam Medical College & Hospital, Dhaka, Bangladesh",
+    "Ad-Din Medical College Hospital": "Ad-Din Medical College Hospital, Dhaka, Bangladesh",
+}
+
+@lru_cache(maxsize=128)
+def geocode_hospital(ui_name: str):
+    place = HOSPITAL_PLACES.get(ui_name, f"{ui_name}, Dhaka, Bangladesh")
+    return geocode_nominatim(place)
+
+def hospitals_with_vacancy_on_date(date_any, bed_key: str) -> list[dict]:
+    results = []
+    for ui_name in HOSPITALS_UI:
+        av_name = UI_TO_AV.get(ui_name) or ui_name
+        rem = get_remaining(av_name, date_any, "ICU" if bed_key == "ICU" else "Normal")
+        if rem and rem > 0:
+            results.append({"ui_name": ui_name, "av_name": av_name, "remaining": rem})
+    return results
+
+def nearest_available_by_user_location_no_key(user_query: str, date_any, bed_key: str, top_k: int = 3,
+                                              prefer_driving_eta: bool = False):
+    """
+    Returns (list, user_ll) where list items contain:
+      {ui_name, av_name, remaining, distance_km, duration_min (maybe), lat, lng}
+    """
+    user_ll = geocode_nominatim(user_query)
+    if not user_ll:
+        return [], None
+    cand = hospitals_with_vacancy_on_date(date_any, bed_key)
+    enriched = []
+    for h in cand:
+        h_ll = geocode_hospital(h["ui_name"])
+        if not h_ll:
+            continue
+        dist_km = haversine_km(user_ll[0], user_ll[1], h_ll[0], h_ll[1])
+        dur_min = None
+        if prefer_driving_eta:
+            osrm = osrm_drive(user_ll, h_ll)
+            if osrm:
+                dist_km, dur_min = osrm
+        enriched.append({
+            **h,
+            "distance_km": float(dist_km),
+            "duration_min": (float(dur_min) if dur_min is not None else None),
+            "lat": h_ll[0], "lng": h_ll[1],
+        })
+    enriched.sort(key=lambda x: x["distance_km"])
+    return enriched[:top_k], user_ll
+
+# ===============================
+# Email helpers
 # ===============================
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -201,105 +324,119 @@ def is_valid_email(addr: str) -> bool:
 def build_allocation_email_html(*, patient_age:int, severity:str, resource:str,
                                 tried_hospital_ui:str, assigned_hospital_av:str,
                                 date_any, distance_km:Optional[float],
-                                beds_avail:int, icu_avail:int) -> str:
+                                beds_avail:int, icu_avail:int,
+                                nearest:list[dict] | None = None,
+                                user_location:str | None = None) -> str:
     dt_txt = pd.to_datetime(date_any).date().isoformat()
     dist_txt = f"{distance_km:.1f} km" if distance_km is not None else "0.0 km"
+    nearest_rows = ""
+    if nearest is not None:
+        if nearest:
+            for i, n in enumerate(nearest, start=1):
+                nearest_rows += f"""
+                  <tr>
+                    <td style="padding:8px 10px;border:1px solid #e2e8f0">{i}</td>
+                    <td style="padding:8px 10px;border:1px solid #e2e8f0">{n['ui_name']}</td>
+                    <td style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">{n['remaining']}</td>
+                    <td style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">{n['distance_km']:.1f} km</td>
+                    <td style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">{(int(round(n['duration_min'])) if n.get('duration_min') is not None else '—')}</td>
+                  </tr>
+                """
+        else:
+            nearest_rows = '<tr><td colspan="5" style="padding:8px 10px;border:1px solid #e2e8f0">No nearby vacancies right now.</td></tr>'
+    nearest_block = f"""
+      <h3 style="margin:18px 0 8px">Nearest hospitals from: {user_location}</h3>
+      <table style="border-collapse:collapse;width:100%;max-width:720px">
+        <tr style="background:#f8fafc">
+          <th style="padding:8px 10px;border:1px solid #e2e8f0">#</th>
+          <th style="padding:8px 10px;border:1px solid #e2e8f0; text-align:left">Hospital</th>
+          <th style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">Beds/ICU free</th>
+          <th style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">Distance</th>
+          <th style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">ETA</th>
+        </tr>
+        {nearest_rows}
+      </table>
+    """ if nearest is not None else ""
+
     return f"""
     <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.6;color:#0f172a">
       <h2 style="margin:0 0 8px">Dengue Patient Allocation Summary</h2>
       <p style="margin:0 0 14px;color:#334155">Date: <strong>{dt_txt}</strong></p>
       <table style="border-collapse:collapse;width:100%;max-width:720px">
-        <tr>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc;width:40%"><strong>Patient Age</strong></td>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0">{patient_age}</td>
-        </tr>
-        <tr>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Severity</strong></td>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0">{severity}</td>
-        </tr>
-        <tr>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Required Resource</strong></td>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0">{resource}</td>
-        </tr>
-        <tr>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Hospital Tried</strong></td>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0">{tried_hospital_ui}</td>
-        </tr>
-        <tr>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Assigned Hospital</strong></td>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0">{assigned_hospital_av}</td>
-        </tr>
-        <tr>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Distance from Tried Hospital</strong></td>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0">{dist_txt}</td>
-        </tr>
-        <tr>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Predicted Normal Beds Available</strong></td>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0">{beds_avail}</td>
-        </tr>
-        <tr>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Predicted ICU Beds Available</strong></td>
-          <td style="padding:10px 12px;border:1px solid #e2e8f0">{icu_avail}</td>
-        </tr>
+        <tr><td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc;width:40%"><strong>Patient Age</strong></td><td style="padding:10px 12px;border:1px solid #e2e8f0">{patient_age}</td></tr>
+        <tr><td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Severity</strong></td><td style="padding:10px 12px;border:1px solid #e2e8f0">{severity}</td></tr>
+        <tr><td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Required Resource</strong></td><td style="padding:10px 12px;border:1px solid #e2e8f0">{resource}</td></tr>
+        <tr><td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Hospital Tried</strong></td><td style="padding:10px 12px;border:1px solid #e2e8f0">{tried_hospital_ui}</td></tr>
+        <tr><td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Assigned Hospital</strong></td><td style="padding:10px 12px;border:1px solid #e2e8f0">{assigned_hospital_av}</td></tr>
+        <tr><td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Distance from Tried Hospital</strong></td><td style="padding:10px 12px;border:1px solid #e2e8f0">{dist_txt}</td></tr>
+        <tr><td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Predicted Normal Beds Available</strong></td><td style="padding:10px 12px;border:1px solid #e2e8f0">{beds_avail}</td></tr>
+        <tr><td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Predicted ICU Beds Available</strong></td><td style="padding:10px 12px;border:1px solid #e2e8f0">{icu_avail}</td></tr>
       </table>
-      <p style="margin-top:16px;color:#475569">
-        This availability is based on the selected time granularity and prediction source used in the app.
-      </p>
+      {nearest_block}
+      <p style="margin-top:16px;color:#475569">Distances are estimates (straight-line or OSRM driving if enabled); availability is based on your selected time granularity.</p>
     </div>
     """
 
-def send_allocation_email(to_email: str, subject: str, html_body: str) -> None:
+def send_email_multi(recipients, subject, html_body):
     """
-    Uses st.secrets['smtp'] for config.
-    - SSL on port 465 (default) or STARTTLS on port 587 (if you set that port).
+    Send an HTML email to multiple recipients.
+    `recipients` can be a list[str] or a comma/semicolon-separated string.
+    Uses st.secrets['smtp'] for host/port/user/password/sender.
     """
-    if "smtp" not in st.secrets:
-        raise RuntimeError("SMTP secrets not configured (st.secrets['smtp']).")
-
-    cfg = st.secrets["smtp"]
-    host = cfg.get("host")
-    port = int(cfg.get("port", 465))
-    user = cfg.get("user")
-    pwd  = cfg.get("password")
-    sender = cfg.get("sender", user)
-
-    if not all([host, port, user, pwd, sender]):
-        raise RuntimeError("SMTP config incomplete. Set host/port/user/password/sender in st.secrets['smtp'].")
-
-    # Build message
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = sender
-    msg["To"] = to_email
-    msg.set_content("Your allocation summary is attached in HTML format.")
-    msg.add_alternative(html_body, subtype="html")
-
-    context = ssl.create_default_context()
-
-    # Decide SSL vs STARTTLS by port
     try:
-        if port == 465:
-            # SSL
-            with smtplib.SMTP_SSL(host=host, port=port, context=context, timeout=20) as server:
-                server.login(user, pwd)
-                server.send_message(msg)
+        if "smtp" not in st.secrets:
+            raise RuntimeError("SMTP secrets not configured in Streamlit (Settings → Secrets).")
+
+        cfg = st.secrets["smtp"]
+        smtp_host = cfg.get("host", "smtp.gmail.com")
+        smtp_port = int(cfg.get("port", 465))
+        smtp_user = cfg.get("user")
+        smtp_pass = cfg.get("password")
+        sender = cfg.get("sender", smtp_user)
+
+        if not all([smtp_host, smtp_port, smtp_user, smtp_pass, sender]):
+            raise RuntimeError("Incomplete SMTP config. Set host/port/user/password/sender in secrets.")
+
+        # normalize recipients
+        if isinstance(recipients, str):
+            recipients = [p.strip() for p in re.split(r"[;,]", recipients) if p.strip()]
+        recipients = [r for r in recipients if is_valid_email(r)]
+        if not recipients:
+            raise ValueError("No valid recipient emails provided.")
+
+        context = ssl.create_default_context()
+        # connect
+        if smtp_port == 465:
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=20)
         else:
-            # STARTTLS (e.g., port 587)
-            with smtplib.SMTP(host=host, port=port, timeout=20) as server:
-                server.ehlo()
-                server.starttls(context=context)
-                server.ehlo()
-                server.login(user, pwd)
-                server.send_message(msg)
-    except smtplib.SMTPAuthenticationError as e:
-        raise RuntimeError("SMTP auth failed. For Gmail, use a NEW App Password and correct Gmail address.") from e
-    except smtplib.SMTPConnectError as e:
-        raise RuntimeError("SMTP connect failed. Network/port may be blocked (465/587).") from e
-    except smtplib.SMTPServerDisconnected as e:
-        raise RuntimeError("Server disconnected unexpectedly. Try again or switch port (465↔587).") from e
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=20)
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()
+        server.login(smtp_user, smtp_pass)
+
+        sent_ok, sent_fail = [], []
+        for rcp in recipients:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = sender
+            msg["To"] = rcp
+            msg.attach(MIMEText(html_body, "html"))
+            try:
+                server.sendmail(sender, rcp, msg.as_string())
+                sent_ok.append(rcp)
+            except Exception as e:
+                sent_fail.append((rcp, str(e)))
+
+        try:
+            server.quit()
+        except Exception:
+            pass
+
+        return {"sent_ok": sent_ok, "sent_fail": sent_fail}
+
     except Exception as e:
-        # Surface any other low-level errors
-        raise RuntimeError(f"SMTP error: {type(e).__name__}: {e}") from e
+        return {"sent_ok": [], "sent_fail": [("ALL", str(e))]}
 
 # ===============================
 # Load repo files
@@ -472,7 +609,6 @@ def log_reroute(original_ui: str, assigned_av: str, date) -> None:
 def get_month_served(hospital_av_name: str, month_str: str) -> int:
     return st.session_state["served"].get((hospital_av_name, month_str), 0)
 
-# NEW: moved here so email block can reuse it before dashboards
 def get_avail_counts(hospital_av_name: str, date) -> dict:
     key = (hospital_av_name, pd.to_datetime(date).normalize())
     out = {"beds_available": None, "icu_available": None}
@@ -481,6 +617,15 @@ def get_avail_counts(hospital_av_name: str, date) -> dict:
         out["beds_available"] = int(np.floor(float(row["_BedsAvail"]))) if not pd.isna(row["_BedsAvail"]) else 0
         out["icu_available"]  = int(np.floor(float(row["_ICUAvail"])))  if not pd.isna(row["_ICUAvail"])  else 0
     return out
+
+def served_df_for_month(month_str: str) -> pd.DataFrame:
+    rows = []
+    for (h, m), cnt in st.session_state["served"].items():
+        if m == month_str:
+            rows.append({"Hospital": h, "Served": cnt})
+    if not rows:
+        return pd.DataFrame(columns=["Hospital","Served"])
+    return pd.DataFrame(rows).sort_values("Served", ascending=False).reset_index(drop=True)
 
 # ===============================
 # UI – Patient inputs
@@ -505,9 +650,20 @@ with st.form("allocation_form"):
         igg_val = st.selectbox("IgG", [0,1], index=0, help="0=Negative, 1=Positive")
         st.caption(f"Time: **{granularity}** · Interp: **{interp_method if granularity!='Monthly' else 'N/A'}**")
 
-    # NEW: email input + opt-in
-    email_addr = st.text_input("Email (optional)", placeholder="name@example.com")
-    email_opt_in = st.checkbox("📧 Email me the allocation summary", value=False)
+    # Location inputs (no API key needed)
+    user_location_query = st.text_input(
+        "Your current location (area, landmark or full address)",
+        placeholder="e.g., Dhanmondi, Dhaka"
+    )
+    suggest_by_location = st.checkbox("🔎 Suggest nearest hospitals with vacancy (no API key)", value=False)
+    use_driving_eta = st.checkbox("Use driving ETA (beta via OSRM demo)", value=False)
+
+    # Multi-recipient email
+    email_addresses = st.text_input(
+        "📧 Recipient Email(s)",
+        placeholder="e.g., patient@gmail.com; doctor@hospital.org; admin@health.gov.bd"
+    )
+    email_opt_in = st.checkbox("Send dengue allocation report via email", value=False)
 
     submit = st.form_submit_button("🚑 Allocate")
 
@@ -574,7 +730,7 @@ if submit:
       </div>
     ''', unsafe_allow_html=True)
 
-    # 4) Travel distance
+    # 4) Travel distance (from tried to assigned via location matrix)
     dist_txt = f"{float(rerouted_distance):.1f} km" if rerouted_distance is not None else "—"
     st.markdown(f'''
       <div class="card">
@@ -627,31 +783,71 @@ if submit:
     # Progress
     st.progress(sev_percent(severity))
 
-    # NEW: Email the result if requested
-    try:
-        if assigned_av and email_opt_in and is_valid_email(email_addr):
-            assigned_counts = get_avail_counts(assigned_av, date_input)  # predicted counts on selected day
-            beds_pred = assigned_counts["beds_available"] if assigned_counts["beds_available"] is not None else 0
-            icu_pred  = assigned_counts["icu_available"]  if assigned_counts["icu_available"]  is not None else 0
-
-            html = build_allocation_email_html(
-                patient_age=age,
-                severity=severity,
-                resource=resource,
-                tried_hospital_ui=hospital_ui,
-                assigned_hospital_av=assigned_av,
-                date_any=date_input,
-                distance_km=(float(rerouted_distance) if rerouted_distance is not None else 0.0),
-                beds_avail=beds_pred,
-                icu_avail=icu_pred,
+    # ---------- Nearest by user location (no key) ----------
+    nearest_list = []
+    user_ll = None
+    if suggest_by_location and user_location_query.strip():
+        try:
+            bed_key_needed = "ICU" if resource == "ICU" else "Normal"
+            nearest_list, user_ll = nearest_available_by_user_location_no_key(
+                user_location_query.strip(), date_input, bed_key_needed,
+                top_k=3, prefer_driving_eta=use_driving_eta
             )
-            subj = f"[Dengue Allocation] {severity} — {resource} at {assigned_av} ({pd.to_datetime(date_input).date()})"
-            send_allocation_email(email_addr.strip(), subj, html)
-            st.success(f"Email sent to {email_addr.strip()}")
-        elif email_opt_in and not is_valid_email(email_addr):
-            st.warning("Please enter a valid email address to receive the summary.")
-    except Exception as e:
-        st.warning(f"Could not send email: {e}")
+        except Exception as e:
+            st.warning(f"Could not fetch nearest hospitals: {e}")
+
+    if suggest_by_location:
+        st.markdown("### 🗺️ Nearest hospitals with vacancy (by your location)")
+        if nearest_list:
+            df_near = pd.DataFrame([{
+                "Hospital": n["ui_name"],
+                "Vacancy (Beds/ICU)": n["remaining"],
+                "Distance (km)": round(n["distance_km"], 1),
+                "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") is not None else None),
+            } for n in nearest_list])
+            st.dataframe(df_near, use_container_width=True)
+
+            # map markers
+            map_rows = []
+            if user_ll:
+                map_rows.append({"name": "You", "lat": user_ll[0], "lon": user_ll[1]})
+            for n in nearest_list:
+                if n["lat"] and n["lng"]:
+                    map_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
+            if map_rows:
+                st.map(pd.DataFrame(map_rows), size=60)
+        else:
+            st.info("No nearby hospitals with vacancy for the required resource right now.")
+
+    # ---------- Email the result to multiple recipients ----------
+    # predicted counts on selected day for assigned hospital (not subtracting session reservations)
+    beds_pred = icu_pred = 0
+    if assigned_av:
+        assigned_counts = get_avail_counts(assigned_av, date_input)
+        beds_pred = assigned_counts["beds_available"] if assigned_counts["beds_available"] is not None else 0
+        icu_pred  = assigned_counts["icu_available"]  if assigned_counts["icu_available"]  is not None else 0
+
+    if email_opt_in and email_addresses.strip():
+        html = build_allocation_email_html(
+            patient_age=age,
+            severity=severity,
+            resource=resource,
+            tried_hospital_ui=hospital_ui,
+            assigned_hospital_av=(assigned_av or "—"),
+            date_any=date_input,
+            distance_km=(float(rerouted_distance) if rerouted_distance is not None else 0.0),
+            beds_avail=beds_pred,
+            icu_avail=icu_pred,
+            nearest=(nearest_list if suggest_by_location else None),
+            user_location=(f"{user_location_query} — {'driving (OSRM)' if use_driving_eta else 'straight-line'}"
+                           if suggest_by_location else None),
+        )
+        subj = f"[Dengue Allocation] {severity} — {resource} · {pd.to_datetime(date_input).date()}"
+        res = send_email_multi(email_addresses, subj, html)
+        if res["sent_ok"]:
+            st.success(f"Email sent to: {', '.join(res['sent_ok'])}")
+        if res["sent_fail"]:
+            st.warning(f"Some emails failed: {res['sent_fail']}")
 
     # Debug drawer
     with st.expander("🧪 Debug: Nearest Hospitals Checked"):
@@ -745,15 +941,6 @@ else:
 
 # Overall leaderboard for the selected month
 st.markdown("### Monthly Leaderboard — Patients Served")
-def served_df_for_month(month_str: str) -> pd.DataFrame:
-    rows = []
-    for (h, m), cnt in st.session_state["served"].items():
-        if m == month_str:
-            rows.append({"Hospital": h, "Served": cnt})
-    if not rows:
-        return pd.DataFrame(columns=["Hospital","Served"])
-    return pd.DataFrame(rows).sort_values("Served", ascending=False).reset_index(drop=True)
-
 served_df = served_df_for_month(dashboard_month)
 if not served_df.empty:
     st.bar_chart(data=served_df.set_index("Hospital")["Served"])
@@ -768,7 +955,7 @@ with st.expander("🔁 Full Reroute Log"):
     else:
         st.write("No reroute events logged yet.")
 
-# Quick raw reservations debug (optional)
+# Raw reservations (debug)
 with st.expander("🗂️ Raw Reservations (debug)"):
     if st.session_state["reservations"]:
         rows = []
