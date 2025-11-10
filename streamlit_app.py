@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import re
+import smtplib, ssl  # NEW: email
+from email.message import EmailMessage  # NEW: email
 from difflib import get_close_matches
 from datetime import datetime
 from pathlib import Path
@@ -163,17 +165,9 @@ def build_name_maps(availability, dist_mat, ui_list):
     return dm_to_av, ui_to_dm, ui_to_av
 
 # ===============================
-# Severity logic (research-based bins you requested)
+# Severity logic
 # ===============================
 def compute_platelet_score(platelet: int) -> int:
-    """
-    Platelet score bins:
-      ≥150k → 0
-      100–149k → 1
-      50–99k  → 2
-      20–49k  → 3
-      <20k    → 4
-    """
     if platelet >= 150_000: return 0
     if platelet >= 100_000: return 1
     if platelet >= 50_000:  return 2
@@ -181,12 +175,6 @@ def compute_platelet_score(platelet: int) -> int:
     return 4
 
 def compute_severity_score(age: int, ns1: int, igm: int, igg: int, platelet: int) -> tuple[int, int]:
-    """
-    Composite = round(PlateletScore + AgeWeight + SecondaryWeight), capped at 4
-      AgeWeight: +1 if age < 15 or age > 60
-      SecondaryWeight: +1 if IgG=1 and (NS1=1 or IgM=1)
-    Returns (platelet_score, severity_score)
-    """
     p_score = compute_platelet_score(platelet)
     age_weight = 1 if (age < 15 or age > 60) else 0
     secondary = 1 if (igg == 1 and (ns1 == 1 or igm == 1)) else 0
@@ -194,12 +182,6 @@ def compute_severity_score(age: int, ns1: int, igm: int, igg: int, platelet: int
     return p_score, severity_score
 
 def verdict_from_score(score: int) -> str:
-    """
-    0 -> Mild
-    1 -> Moderate
-    2 -> Severe
-    3–4 -> Very Severe
-    """
     if score >= 3: return "Very Severe"
     if score == 2: return "Severe"
     if score == 1: return "Moderate"
@@ -207,6 +189,98 @@ def verdict_from_score(score: int) -> str:
 
 def required_resource(severity: str) -> str:
     return "ICU" if severity in ("Severe", "Very Severe") else "General Bed"
+
+# ===============================
+# NEW: Email helpers (validator, HTML builder, sender)
+# ===============================
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+def is_valid_email(addr: str) -> bool:
+    return isinstance(addr, str) and bool(EMAIL_RE.match(addr.strip()))
+
+def build_allocation_email_html(*, patient_age:int, severity:str, resource:str,
+                                tried_hospital_ui:str, assigned_hospital_av:str,
+                                date_any, distance_km:Optional[float],
+                                beds_avail:int, icu_avail:int) -> str:
+    dt_txt = pd.to_datetime(date_any).date().isoformat()
+    dist_txt = f"{distance_km:.1f} km" if distance_km is not None else "0.0 km"
+    return f"""
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.6;color:#0f172a">
+      <h2 style="margin:0 0 8px">Dengue Patient Allocation Summary</h2>
+      <p style="margin:0 0 14px;color:#334155">Date: <strong>{dt_txt}</strong></p>
+      <table style="border-collapse:collapse;width:100%;max-width:720px">
+        <tr>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc;width:40%"><strong>Patient Age</strong></td>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0">{patient_age}</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Severity</strong></td>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0">{severity}</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Required Resource</strong></td>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0">{resource}</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Hospital Tried</strong></td>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0">{tried_hospital_ui}</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Assigned Hospital</strong></td>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0">{assigned_hospital_av}</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Distance from Tried Hospital</strong></td>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0">{dist_txt}</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Predicted Normal Beds Available</strong></td>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0">{beds_avail}</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Predicted ICU Beds Available</strong></td>
+          <td style="padding:10px 12px;border:1px solid #e2e8f0">{icu_avail}</td>
+        </tr>
+      </table>
+      <p style="margin-top:16px;color:#475569">
+        This availability is based on the selected time granularity and prediction source used in the app.
+      </p>
+    </div>
+    """
+
+def send_allocation_email(to_email: str, subject: str, html_body: str) -> None:
+    """
+    Requires Streamlit secrets like:
+    [smtp]
+    host = "smtp.gmail.com"
+    port = 465
+    user = "you@example.com"
+    password = "app-password-or-token"
+    sender = "Dengue Allocation <you@example.com>"
+    """
+    if "smtp" not in st.secrets:
+        raise RuntimeError("SMTP secrets not configured (st.secrets['smtp']).")
+    cfg = st.secrets["smtp"]
+    host = cfg.get("host")
+    port = int(cfg.get("port", 465))
+    user = cfg.get("user")
+    pwd  = cfg.get("password")
+    sender = cfg.get("sender", user)
+
+    if not all([host, port, user, pwd, sender]):
+        raise RuntimeError("SMTP config incomplete. Please set host/port/user/password/sender in st.secrets['smtp'].")
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = to_email
+    msg.set_content("Your allocation summary is attached in HTML format.")
+    msg.add_alternative(html_body, subtype="html")
+
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL(host, port, context=context) as server:
+        server.login(user, pwd)
+        server.send_message(msg)
 
 # ===============================
 # Load repo files
@@ -323,11 +397,9 @@ if "reservations" not in st.session_state:
     st.session_state["reservations"] = {}
 
 if "served" not in st.session_state:
-    # key: (hospital_av_name, 'YYYY-MM') -> count
     st.session_state["served"] = {}
 
 if "reroute_log" not in st.session_state:
-    # list of dicts: {"date": date, "original": original_ui, "assigned": assigned_av, "month": "YYYY-MM"}
     st.session_state["reroute_log"] = []
 
 def get_remaining(hospital: str, date, bed_type: str) -> int:
@@ -359,12 +431,10 @@ def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
             return neighbor_av, float(dist), None, checks
     return None, None, "No hospitals with vacancy found", checks
 
-# ======= New: served / reroute helpers =========
 def month_str_from_date(dt) -> str:
     return pd.to_datetime(dt).strftime("%Y-%m")
 
 def increment_served(hospital_av_name: str, date) -> None:
-    """Increment served count for the hospital for the month of `date`."""
     if not hospital_av_name:
         return
     m = month_str_from_date(date)
@@ -383,15 +453,15 @@ def log_reroute(original_ui: str, assigned_av: str, date) -> None:
 def get_month_served(hospital_av_name: str, month_str: str) -> int:
     return st.session_state["served"].get((hospital_av_name, month_str), 0)
 
-def served_df_for_month(month_str: str) -> pd.DataFrame:
-    rows = []
-    for (h, m), cnt in st.session_state["served"].items():
-        if m == month_str:
-            rows.append({"Hospital": h, "Served": cnt})
-    if not rows:
-        return pd.DataFrame(columns=["Hospital","Served"])
-    df = pd.DataFrame(rows).sort_values("Served", ascending=False).reset_index(drop=True)
-    return df
+# NEW: moved here so email block can reuse it before dashboards
+def get_avail_counts(hospital_av_name: str, date) -> dict:
+    key = (hospital_av_name, pd.to_datetime(date).normalize())
+    out = {"beds_available": None, "icu_available": None}
+    if key in availability.index:
+        row = availability.loc[key]
+        out["beds_available"] = int(np.floor(float(row["_BedsAvail"]))) if not pd.isna(row["_BedsAvail"]) else 0
+        out["icu_available"]  = int(np.floor(float(row["_ICUAvail"])))  if not pd.isna(row["_ICUAvail"])  else 0
+    return out
 
 # ===============================
 # UI – Patient inputs
@@ -415,6 +485,11 @@ with st.form("allocation_form"):
     with c4:
         igg_val = st.selectbox("IgG", [0,1], index=0, help="0=Negative, 1=Positive")
         st.caption(f"Time: **{granularity}** · Interp: **{interp_method if granularity!='Monthly' else 'N/A'}**")
+
+    # NEW: email input + opt-in
+    email_addr = st.text_input("Email (optional)", placeholder="name@example.com")
+    email_opt_in = st.checkbox("📧 Email me the allocation summary", value=False)
+
     submit = st.form_submit_button("🚑 Allocate")
 
 # ===============================
@@ -426,7 +501,7 @@ note = ""
 debug_checks = []
 
 if submit:
-    # ---- New severity logic ----
+    # ---- Severity logic ----
     p_score, s_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
     severity = verdict_from_score(s_score)
     resource = required_resource(severity)
@@ -445,9 +520,7 @@ if submit:
 
     if assigned_av:
         reserve_bed(assigned_av, date_input, bed_key, 1)
-        # increment served count for assigned hospital
         increment_served(assigned_av, date_input)
-        # if rerouted (assigned different from start_av), log reroute
         if assigned_av != (start_av or hospital_ui):
             log_reroute(hospital_ui, assigned_av, date_input)
 
@@ -464,7 +537,7 @@ if submit:
       </div>
     ''', unsafe_allow_html=True)
 
-    # 2) Resource needed card (replaces Platelet Score card)
+    # 2) Resource needed
     st.markdown(f'''
       <div class="card">
         <div class="kpi">{resource}</div>
@@ -473,7 +546,7 @@ if submit:
       </div>
     ''', unsafe_allow_html=True)
 
-    # 3) Date card
+    # 3) Date
     st.markdown(f'''
       <div class="card">
         <div class="kpi">{pd.to_datetime(date_input).date()}</div>
@@ -482,7 +555,7 @@ if submit:
       </div>
     ''', unsafe_allow_html=True)
 
-    # 4) Travel distance card
+    # 4) Travel distance
     dist_txt = f"{float(rerouted_distance):.1f} km" if rerouted_distance is not None else "—"
     st.markdown(f'''
       <div class="card">
@@ -498,14 +571,12 @@ if submit:
     st.markdown('<div class="card ticket">', unsafe_allow_html=True)
     left, right = st.columns([1.2,.8], gap="medium")
     with left:
-        # availability banner
         if available_status == "Yes":
             st.markdown('<div class="banner ok">✅ Bed available at selected hospital</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="banner warn">⚠️ No vacancy available here — finding nearest option…</div>', unsafe_allow_html=True)
         st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
 
-        # Route lane
         tried = hospital_ui
         st.markdown(f"**Hospital Tried:** {tried}", unsafe_allow_html=True)
         st.markdown('<div class="route" style="margin-top:8px">', unsafe_allow_html=True)
@@ -534,8 +605,34 @@ if submit:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Progress (visual feel)
+    # Progress
     st.progress(sev_percent(severity))
+
+    # NEW: Email the result if requested
+    try:
+        if assigned_av and email_opt_in and is_valid_email(email_addr):
+            assigned_counts = get_avail_counts(assigned_av, date_input)  # predicted counts on selected day
+            beds_pred = assigned_counts["beds_available"] if assigned_counts["beds_available"] is not None else 0
+            icu_pred  = assigned_counts["icu_available"]  if assigned_counts["icu_available"]  is not None else 0
+
+            html = build_allocation_email_html(
+                patient_age=age,
+                severity=severity,
+                resource=resource,
+                tried_hospital_ui=hospital_ui,
+                assigned_hospital_av=assigned_av,
+                date_any=date_input,
+                distance_km=(float(rerouted_distance) if rerouted_distance is not None else 0.0),
+                beds_avail=beds_pred,
+                icu_avail=icu_pred,
+            )
+            subj = f"[Dengue Allocation] {severity} — {resource} at {assigned_av} ({pd.to_datetime(date_input).date()})"
+            send_allocation_email(email_addr.strip(), subj, html)
+            st.success(f"Email sent to {email_addr.strip()}")
+        elif email_opt_in and not is_valid_email(email_addr):
+            st.warning("Please enter a valid email address to receive the summary.")
+    except Exception as e:
+        st.warning(f"Could not send email: {e}")
 
     # Debug drawer
     with st.expander("🧪 Debug: Nearest Hospitals Checked"):
@@ -554,7 +651,6 @@ if submit:
 st.markdown("---")
 st.header("📊 Hospital Monthly Dashboard")
 
-# Select a hospital for dashboard view (allow choosing UI hospital or direct availability hospital)
 dash_col1, dash_col2 = st.columns([1,1])
 with dash_col1:
     dashboard_ui_hospital = st.selectbox("Choose hospital to view dashboard", HOSPITALS_UI, index=0)
@@ -564,17 +660,6 @@ with dash_col2:
 dashboard_start_av = UI_TO_AV.get(dashboard_ui_hospital) or dashboard_ui_hospital
 dashboard_month = month_str_from_date(dashboard_date)
 
-# Helper to get availability numbers safely
-def get_avail_counts(hospital_av_name: str, date) -> dict:
-    key = (hospital_av_name, pd.to_datetime(date).normalize())
-    out = {"beds_available": None, "icu_available": None}
-    if key in availability.index:
-        row = availability.loc[key]
-        out["beds_available"] = int(np.floor(float(row["_BedsAvail"]))) if not pd.isna(row["_BedsAvail"]) else 0
-        out["icu_available"]  = int(np.floor(float(row["_ICUAvail"])))  if not pd.isna(row["_ICUAvail"])  else 0
-    return out
-
-# Dashboard for selected UI hospital
 st.markdown(f"### Dashboard — {dashboard_ui_hospital}  (month: {dashboard_month})")
 h_avail = get_avail_counts(dashboard_start_av, dashboard_date)
 served_count = get_month_served(dashboard_start_av, dashboard_month)
@@ -604,18 +689,16 @@ with col3:
 
 st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-# If the last allocation resulted in reroute to another hospital, show rerouted dashboards
-# We'll display any hospitals assigned in the same month as the dashboard_date that were assigned as reroutes
 reroutes_this_month = [r for r in st.session_state["reroute_log"] if r["month"] == dashboard_month]
 
 if reroutes_this_month:
     st.markdown("#### Rerouted Assignments (this month)")
-    # Aggregate assigned hospitals that received reroutes this month
     assigned_counts = {}
     for r in reroutes_this_month:
         assigned_counts[r["assigned_av"]] = assigned_counts.get(r["assigned_av"], 0) + 1
-    agg_rows = [{"Assigned Hospital":k, "Rerouted Count":v} for k,v in assigned_counts.items()]
-    df_rerouted = pd.DataFrame(agg_rows).sort_values("Rerouted Count", ascending=False).reset_index(drop=True)
+    df_rerouted = pd.DataFrame(
+        [{"Assigned Hospital":k, "Rerouted Count":v} for k,v in assigned_counts.items()]
+    ).sort_values("Rerouted Count", ascending=False).reset_index(drop=True)
     st.dataframe(df_rerouted, use_container_width=True)
 
     st.markdown("#### Rerouted Hospital Dashboards")
@@ -643,9 +726,17 @@ else:
 
 # Overall leaderboard for the selected month
 st.markdown("### Monthly Leaderboard — Patients Served")
+def served_df_for_month(month_str: str) -> pd.DataFrame:
+    rows = []
+    for (h, m), cnt in st.session_state["served"].items():
+        if m == month_str:
+            rows.append({"Hospital": h, "Served": cnt})
+    if not rows:
+        return pd.DataFrame(columns=["Hospital","Served"])
+    return pd.DataFrame(rows).sort_values("Served", ascending=False).reset_index(drop=True)
+
 served_df = served_df_for_month(dashboard_month)
 if not served_df.empty:
-    # show bar chart and table
     st.bar_chart(data=served_df.set_index("Hospital")["Served"])
     st.dataframe(served_df, use_container_width=True)
 else:
