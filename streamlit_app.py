@@ -785,63 +785,6 @@ def management_view():
         else:
             st.write("No reroutes recorded this month.")
 
-    # Dashboard (same as earlier): monthly dashboard, reroute log etc.
-    st.markdown("---")
-    st.header("📊 Hospital Monthly Dashboard (Management)")
-    dash_col1, dash_col2 = st.columns([1,1])
-    with dash_col1:
-        dashboard_ui_hospital = st.selectbox("Choose hospital to view dashboard", HOSPITALS_UI, index=0)
-    with dash_col2:
-        all_dates = sorted(list(set([d for _, d in availability.index])))
-        dashboard_date = st.date_input("View month (pick any date in month)", value=all_dates[-1], min_value=all_dates[0], max_value=all_dates[-1])
-    dashboard_start_av = UI_TO_AV.get(dashboard_ui_hospital) or dashboard_ui_hospital
-    dashboard_month = month_str_from_date(dashboard_date)
-    st.markdown(f"### Dashboard — {dashboard_ui_hospital}  (month: {dashboard_month})")
-    h_avail = get_avail_counts(dashboard_start_av, dashboard_date)
-    served_count = get_month_served(dashboard_start_av, dashboard_month)
-    col1, col2, col3 = st.columns([1,1,1])
-    with col1:
-        st.markdown(f'<div class="card"><div class="kpi">{h_avail["beds_available"] if h_avail["beds_available"] is not None else "—"}</div><div class="kpi-label">Normal Beds Available (on selected day)</div></div>', unsafe_allow_html=True)
-    with col2:
-        st.markdown(f'<div class="card"><div class="kpi">{h_avail["icu_available"] if h_avail["icu_available"] is not None else "—"}</div><div class="kpi-label">ICU Beds Available (on selected day)</div></div>', unsafe_allow_html=True)
-    with col3:
-        st.markdown(f'<div class="card"><div class="kpi">{served_count}</div><div class="kpi-label">Total Patients Served (this month)</div></div>', unsafe_allow_html=True)
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-
-    reroutes_this_month = [r for r in st.session_state["reroute_log"] if r["month"] == dashboard_month]
-    if reroutes_this_month:
-        st.markdown("#### Rerouted Assignments (this month)")
-        assigned_counts = {}
-        for r in reroutes_this_month:
-            assigned_counts[r["assigned_av"]] = assigned_counts.get(r["assigned_av"], 0) + 1
-        df_rerouted = pd.DataFrame([{"Assigned Hospital":k, "Rerouted Count":v} for k,v in assigned_counts.items()]).sort_values("Rerouted Count", ascending=False).reset_index(drop=True)
-        st.dataframe(df_rerouted, use_container_width=True)
-        st.markdown("#### Rerouted Hospital Dashboards")
-        for assigned_h in assigned_counts.keys():
-            st.markdown(f"**{assigned_h}** — total rerouted to here this month: {assigned_counts[assigned_h]}")
-            av = get_avail_counts(assigned_h, dashboard_date)
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown(f'<div class="card"><div class="kpi">{av["beds_available"] if av["beds_available"] is not None else "—"}</div><div class="kpi-label">Normal Beds Available (on selected day)</div></div>', unsafe_allow_html=True)
-            with c2:
-                st.markdown(f'<div class="card"><div class="kpi">{get_month_served(assigned_h, dashboard_month)}</div><div class="kpi-label">Patients Served (this month)</div></div>', unsafe_allow_html=True)
-            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    else:
-        st.info("No reroutes logged for the selected month.")
-
-    st.markdown("### Monthly Leaderboard — Patients Served")
-    served_df = pd.DataFrame([{"Hospital":h,"Served":cnt} for (h,m),cnt in st.session_state["served"].items() if m==dashboard_month]).sort_values("Served", ascending=False).reset_index(drop=True)
-    if not served_df.empty:
-        st.bar_chart(data=served_df.set_index("Hospital")["Served"])
-        st.dataframe(served_df, use_container_width=True)
-    else:
-        st.write("No patients served data for this month yet.")
-
-    with st.expander("🔁 Full Reroute Log"):
-        if st.session_state["reroute_log"]:
-            st.dataframe(pd.DataFrame(st.session_state["reroute_log"]), use_container_width=True)
-        else:
-            st.write("No reroute events logged yet.")
 
 # -------------------------------
 # Individual view function
