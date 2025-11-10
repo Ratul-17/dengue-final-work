@@ -250,16 +250,12 @@ def build_allocation_email_html(*, patient_age:int, severity:str, resource:str,
 
 def send_allocation_email(to_email: str, subject: str, html_body: str) -> None:
     """
-    Requires Streamlit secrets like:
-    [smtp]
-    host = "smtp.gmail.com"
-    port = 465
-    user = "you@example.com"
-    password = "app-password-or-token"
-    sender = "Dengue Allocation <you@example.com>"
+    Uses st.secrets['smtp'] for config.
+    - SSL on port 465 (default) or STARTTLS on port 587 (if you set that port).
     """
     if "smtp" not in st.secrets:
         raise RuntimeError("SMTP secrets not configured (st.secrets['smtp']).")
+
     cfg = st.secrets["smtp"]
     host = cfg.get("host")
     port = int(cfg.get("port", 465))
@@ -268,8 +264,9 @@ def send_allocation_email(to_email: str, subject: str, html_body: str) -> None:
     sender = cfg.get("sender", user)
 
     if not all([host, port, user, pwd, sender]):
-        raise RuntimeError("SMTP config incomplete. Please set host/port/user/password/sender in st.secrets['smtp'].")
+        raise RuntimeError("SMTP config incomplete. Set host/port/user/password/sender in st.secrets['smtp'].")
 
+    # Build message
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = sender
@@ -278,9 +275,31 @@ def send_allocation_email(to_email: str, subject: str, html_body: str) -> None:
     msg.add_alternative(html_body, subtype="html")
 
     context = ssl.create_default_context()
-    with smtplib.SMTP_SSL(host, port, context=context) as server:
-        server.login(user, pwd)
-        server.send_message(msg)
+
+    # Decide SSL vs STARTTLS by port
+    try:
+        if port == 465:
+            # SSL
+            with smtplib.SMTP_SSL(host=host, port=port, context=context, timeout=20) as server:
+                server.login(user, pwd)
+                server.send_message(msg)
+        else:
+            # STARTTLS (e.g., port 587)
+            with smtplib.SMTP(host=host, port=port, timeout=20) as server:
+                server.ehlo()
+                server.starttls(context=context)
+                server.ehlo()
+                server.login(user, pwd)
+                server.send_message(msg)
+    except smtplib.SMTPAuthenticationError as e:
+        raise RuntimeError("SMTP auth failed. For Gmail, use a NEW App Password and correct Gmail address.") from e
+    except smtplib.SMTPConnectError as e:
+        raise RuntimeError("SMTP connect failed. Network/port may be blocked (465/587).") from e
+    except smtplib.SMTPServerDisconnected as e:
+        raise RuntimeError("Server disconnected unexpectedly. Try again or switch port (465↔587).") from e
+    except Exception as e:
+        # Surface any other low-level errors
+        raise RuntimeError(f"SMTP error: {type(e).__name__}: {e}") from e
 
 # ===============================
 # Load repo files
