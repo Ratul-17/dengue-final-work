@@ -6,6 +6,7 @@ import re
 import math
 import requests
 import smtplib, ssl
+import altair as alt
 import pydeck as pdk
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -633,6 +634,8 @@ mgmt_password_secret = st.secrets.get("management_password") if st.secrets else 
 # -------------------------------
 def management_view():
     st.header("🔧 Management View")
+
+    # Optional password check (uses mgmt_password_secret from outer scope)
     if mgmt_password_secret:
         pw = st.text_input("Management Password", type="password")
         if not pw:
@@ -642,28 +645,32 @@ def management_view():
             st.error("Incorrect password.")
             return
 
-    # Reuse much of your original management UI:
-    st.sidebar.header("Management controls")
+    # Sidebar options
+    st.sidebar.header("Management Controls")
     gran = st.sidebar.selectbox("Time granularity", ["Daily","Weekly","Monthly"], index=0)
     interp = st.sidebar.selectbox("Interpolation (when expanding)", ["linear","ffill"], index=0)
-    st.sidebar.markdown("**Rebuild availability** (click to refresh with selected options)")
-    if st.sidebar.button("Rebuild availability"):
+
+    if st.sidebar.button("🔄 Rebuild availability"):
         try:
             global availability, dist_mat, DM_TO_AV, UI_TO_DM, UI_TO_AV
             availability = build_availability_from_predictions(df_pred_raw, gran, interp)
             dist_mat = build_distance_matrix(df_loc)
             DM_TO_AV, UI_TO_DM, UI_TO_AV = build_name_maps(availability, dist_mat, HOSPITALS_UI)
-            st.sidebar.success("Rebuilt availability & name maps.")
+            st.sidebar.success("✅ Rebuilt successfully.")
         except Exception as e:
-            st.sidebar.error(f"Error: {e}")
+            st.sidebar.error(f"Error rebuilding data: {e}")
 
-    # Management: patient intake & allocation (identical to earlier logic)
-    st.subheader("Patient Intake (Management)")
+    # ===============================
+    # Allocation Section
+    # ===============================
+    st.subheader("🧾 Patient Intake (Management)")
+
     with st.form("mgmt_allocation_form"):
-        c1,c2,c3,c4 = st.columns([1.2,1,1,1])
+        c1, c2, c3, c4 = st.columns([1.3, 1, 1, 1])
+        all_dates = sorted(list(set([d for _, d in availability.index])))
         with c1:
             hospital_ui = st.selectbox("Hospital Name", HOSPITALS_UI)
-            date_input  = st.date_input("Date", value=sorted(list(set([d for _, d in availability.index])))[-1])
+            date_input = st.date_input("Date", value=all_dates[-1])
             weight = st.number_input("Weight (kg)", min_value=1.0, max_value=250.0, value=60.0)
         with c2:
             age = st.number_input("Age (years)", min_value=0, max_value=120, value=25)
@@ -676,6 +683,7 @@ def management_view():
             st.caption(f"Time: **{gran}** · Interp: **{interp if gran!='Monthly' else 'N/A'}**")
         submit = st.form_submit_button("🚑 Allocate (Management)")
 
+    # Allocation logic
     if submit:
         p_score, s_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
         severity = verdict_from_score(s_score)
@@ -683,14 +691,16 @@ def management_view():
         bed_key = "ICU" if resource == "ICU" else "Normal"
         start_av = UI_TO_AV.get(hospital_ui) or hospital_ui
         remaining_here = get_remaining(start_av, date_input, bed_key)
-        debug_checks = []
-        assigned_av = None; rerouted_distance = None; note = ""
-        if remaining_here > 0 and ((start_av, pd.to_datetime(date_input).normalize()) in availability.index):
+
+        assigned_av = None; rerouted_distance = None; debug_checks = []
+        if remaining_here > 0:
             assigned_av, rerouted_distance, note = start_av, None, "Assigned at selected hospital"
             available_status = "Yes"
         else:
-            available_status = "No vacancy available here"
-            assigned_av, rerouted_distance, err, debug_checks = find_reroute_nearest_first(hospital_ui, date_input, bed_key)
+            available_status = "No vacancy — rerouting..."
+            assigned_av, rerouted_distance, err, debug_checks = find_reroute_nearest_first(
+                hospital_ui, date_input, bed_key
+            )
             note = f"Rerouted to {assigned_av}" if assigned_av else err
 
         if assigned_av:
@@ -699,109 +709,84 @@ def management_view():
             if assigned_av != (start_av or hospital_ui):
                 log_reroute(hospital_ui, assigned_av, date_input)
 
-        # Show ticket (same style)
-        st.markdown("### Allocation Result (Management)")
+        # Show summary cards
+        st.markdown("### Allocation Result")
         st.markdown('<div class="grid grid-4">', unsafe_allow_html=True)
         st.markdown(f'<div class="card"><div class="kpi">{s_score}</div><div class="kpi-label">Severity Score</div><div class="ribbon">{severity_badge(severity)}</div></div>', unsafe_allow_html=True)
         st.markdown(f'<div class="card"><div class="kpi">{resource}</div><div class="kpi-label">Resource Needed</div><div class="ribbon">{resource_badge(resource)}</div></div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="card"><div class="kpi">{pd.to_datetime(date_input).date()}</div><div class="kpi-label">Date</div><div class="ribbon"><span class="badge blue">{gran}</span></div></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="card"><div class="kpi">{pd.to_datetime(date_input).date()}</div><div class="kpi-label">Date</div></div>', unsafe_allow_html=True)
         dist_txt = f"{float(rerouted_distance):.1f} km" if rerouted_distance is not None else "—"
-        st.markdown(f'<div class="card"><div class="kpi">{dist_txt}</div><div class="kpi-label">Travel Distance</div><div class="ribbon"><span class="badge blue">{interp if gran!="Monthly" else "N/A"}</span></div></div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        st.markdown('<div class="card ticket">', unsafe_allow_html=True)
-        left, right = st.columns([1.2,.8], gap="medium")
-        with left:
-            if available_status == "Yes":
-                st.markdown('<div class="banner ok">✅ Bed available at selected hospital</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="banner warn">⚠️ No vacancy available here — finding nearest option…</div>', unsafe_allow_html=True)
-            st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
-            tried = hospital_ui
-            st.markdown(f"**Hospital Tried:** {tried}", unsafe_allow_html=True)
-            st.markdown('<div class="route" style="margin-top:8px">', unsafe_allow_html=True)
-            st.markdown(f'<span class="pill">{tried}</span>', unsafe_allow_html=True)
-            st.markdown('<div class="arrow">➡️</div>', unsafe_allow_html=True)
-            final_chip = f'<span class="pill">{assigned_av if assigned_av else "—"}</span>'
-            st.markdown(final_chip, unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-            st.caption(f"Note: **{note}**")
-        with right:
-            st.markdown("**Summary**"); st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
-            summary = {"Severity": severity, "Resource": resource, "Severity Score": s_score, "Hospital Tried": tried, "Available at Current Hospital": available_status, "Assigned Hospital": assigned_av, "Distance (km)": float(rerouted_distance) if rerouted_distance is not None else None}
-            st.markdown('<div class="codebox">', unsafe_allow_html=True)
-            st.json(summary)
-            st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="card"><div class="kpi">{dist_txt}</div><div class="kpi-label">Travel Distance</div></div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
         st.progress(sev_percent(severity))
 
-        with st.expander("🧪 Debug: Nearest Hospitals Checked"):
-            if debug_checks:
-                dbg = pd.DataFrame(debug_checks)
-                if assigned_av:
-                    dbg["Allocated"] = dbg["Neighbor Hospital"].eq(assigned_av)
-                    dbg = dbg.sort_values(["Allocated","Remaining Beds/ICU"], ascending=[False,False])
-                st.dataframe(dbg, use_container_width=True)
-            else:
-                st.write("No neighbor checks — assigned at selected hospital.")
+        if debug_checks:
+            with st.expander("🧪 Debug: Reroute checks"):
+                st.dataframe(pd.DataFrame(debug_checks), use_container_width=True)
 
-    # Dashboard (same as earlier): monthly dashboard, reroute log etc.
+    # ===============================
+    # Interactive Dashboard Section
+    # ===============================
     st.markdown("---")
-    st.header("📊 Hospital Monthly Dashboard (Management)")
-    dash_col1, dash_col2 = st.columns([1,1])
-    with dash_col1:
-        dashboard_ui_hospital = st.selectbox("Choose hospital to view dashboard", HOSPITALS_UI, index=0)
-    with dash_col2:
-        all_dates = sorted(list(set([d for _, d in availability.index])))
-        dashboard_date = st.date_input("View month (pick any date in month)", value=all_dates[-1], min_value=all_dates[0], max_value=all_dates[-1])
-    dashboard_start_av = UI_TO_AV.get(dashboard_ui_hospital) or dashboard_ui_hospital
+    st.header("📊 Interactive Hospital Dashboard")
+
+    # Month selector
+    all_dates = sorted(list(set([d for _, d in availability.index])))
+    dashboard_date = st.date_input("Pick a date to view month", value=all_dates[-1])
     dashboard_month = month_str_from_date(dashboard_date)
-    st.markdown(f"### Dashboard — {dashboard_ui_hospital}  (month: {dashboard_month})")
-    h_avail = get_avail_counts(dashboard_start_av, dashboard_date)
-    served_count = get_month_served(dashboard_start_av, dashboard_month)
-    col1, col2, col3 = st.columns([1,1,1])
-    with col1:
-        st.markdown(f'<div class="card"><div class="kpi">{h_avail["beds_available"] if h_avail["beds_available"] is not None else "—"}</div><div class="kpi-label">Normal Beds Available (on selected day)</div></div>', unsafe_allow_html=True)
-    with col2:
-        st.markdown(f'<div class="card"><div class="kpi">{h_avail["icu_available"] if h_avail["icu_available"] is not None else "—"}</div><div class="kpi-label">ICU Beds Available (on selected day)</div></div>', unsafe_allow_html=True)
-    with col3:
-        st.markdown(f'<div class="card"><div class="kpi">{served_count}</div><div class="kpi-label">Total Patients Served (this month)</div></div>', unsafe_allow_html=True)
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    reroutes_this_month = [r for r in st.session_state["reroute_log"] if r["month"] == dashboard_month]
-    if reroutes_this_month:
-        st.markdown("#### Rerouted Assignments (this month)")
-        assigned_counts = {}
-        for r in reroutes_this_month:
-            assigned_counts[r["assigned_av"]] = assigned_counts.get(r["assigned_av"], 0) + 1
-        df_rerouted = pd.DataFrame([{"Assigned Hospital":k, "Rerouted Count":v} for k,v in assigned_counts.items()]).sort_values("Rerouted Count", ascending=False).reset_index(drop=True)
-        st.dataframe(df_rerouted, use_container_width=True)
-        st.markdown("#### Rerouted Hospital Dashboards")
-        for assigned_h in assigned_counts.keys():
-            st.markdown(f"**{assigned_h}** — total rerouted to here this month: {assigned_counts[assigned_h]}")
-            av = get_avail_counts(assigned_h, dashboard_date)
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown(f'<div class="card"><div class="kpi">{av["beds_available"] if av["beds_available"] is not None else "—"}</div><div class="kpi-label">Normal Beds Available (on selected day)</div></div>', unsafe_allow_html=True)
-            with c2:
-                st.markdown(f'<div class="card"><div class="kpi">{get_month_served(assigned_h, dashboard_month)}</div><div class="kpi-label">Patients Served (this month)</div></div>', unsafe_allow_html=True)
-            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    # Build served_df safely (fix KeyError when empty)
+    served_rows = [
+        {"Hospital": h, "Served": cnt}
+        for (h, m), cnt in st.session_state["served"].items()
+        if m == dashboard_month
+    ]
+    if served_rows:
+        served_df = pd.DataFrame(served_rows).sort_values("Served", ascending=False).reset_index(drop=True)
     else:
-        st.info("No reroutes logged for the selected month.")
+        served_df = pd.DataFrame(columns=["Hospital", "Served"])
 
-    st.markdown("### Monthly Leaderboard — Patients Served")
-    served_df = pd.DataFrame([{"Hospital":h,"Served":cnt} for (h,m),cnt in st.session_state["served"].items() if m==dashboard_month]).sort_values("Served", ascending=False).reset_index(drop=True)
+    # Metrics
+    total_served = int(served_df["Served"].sum()) if not served_df.empty else 0
+    reroutes_this_month = [r for r in st.session_state["reroute_log"] if r["month"] == dashboard_month]
+    total_reroutes = len(reroutes_this_month)
+    total_hospitals_active = len(served_df) if not served_df.empty else 0
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🏥 Hospitals Active", total_hospitals_active)
+    col2.metric("👥 Patients Served (this month)", total_served)
+    col3.metric("🔁 Reroutes (this month)", total_reroutes)
+
+    # Charts & table (only if data exists)
     if not served_df.empty:
-        st.bar_chart(data=served_df.set_index("Hospital")["Served"])
+        # Bar chart
+        st.subheader("Patients Served — By Hospital")
+        st.bar_chart(served_df.set_index("Hospital")["Served"])
+
+        # Altair pie chart for resource ratio (example: approximate ICUs served if you collect that later)
+        st.subheader("Quick Resource Breakdown (approx.)")
+        # Make a small mock split: if you later store resource counts, replace this with real data.
+        icu_approx = int(round(total_served * 0.35))  # placeholder ratio
+        general_approx = max(0, total_served - icu_approx)
+        data_pie = pd.DataFrame({"Resource": ["ICU", "General Bed"], "Count": [icu_approx, general_approx]})
+        chart = alt.Chart(data_pie).mark_arc(innerRadius=40).encode(
+            theta=alt.Theta(field="Count", type="quantitative"),
+            color=alt.Color("Resource:N"),
+            tooltip=["Resource", "Count"]
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+        st.subheader("Raw served table")
         st.dataframe(served_df, use_container_width=True)
     else:
-        st.write("No patients served data for this month yet.")
+        st.info("No patients served data for this month yet.")
 
-    with st.expander("🔁 Full Reroute Log"):
-        if st.session_state["reroute_log"]:
-            st.dataframe(pd.DataFrame(st.session_state["reroute_log"]), use_container_width=True)
+    # Reroute log
+    with st.expander("🔁 Reroute Log (this month)"):
+        if reroutes_this_month:
+            st.dataframe(pd.DataFrame(reroutes_this_month), use_container_width=True)
         else:
-            st.write("No reroute events logged yet.")
+            st.write("No reroutes recorded this month.")
 
 # -------------------------------
 # Individual view function
