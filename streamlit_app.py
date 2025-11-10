@@ -46,7 +46,7 @@ HOSPITALS_UI = [
     "Ad-Din Medical College Hospital",
 ]
 
-# Common Dhaka areas (you can add more later)
+# Common Dhaka areas (extend any time)
 DHAKA_AREAS = [
     "Dhanmondi","Mohammadpur","Gulshan","Banani","Baridhara","Uttara","Mirpur","Kafrul","Pallabi",
     "Tejgaon","Farmgate","Kawran Bazar","Panthapath","Kalabagan","New Market","Science Lab",
@@ -60,39 +60,87 @@ DHAKA_AREAS = [
 ]
 
 # ===============================
-# Styles (glassmorphism + chips)
+# THEME-AWARE Styles (auto light/dark)
 # ===============================
 st.markdown("""
 <style>
+/* ---------- THEME TOKENS (light default, dark override) ---------- */
 :root{
-  --bg:#0b1220; --card:#0f172a; --muted:#94a3b8;
-  --ring:#22d3ee; --good:#10b981; --warn:#f59e0b; --bad:#ef4444; --info:#3b82f6;
+  /* Light */
+  --bg:#f5f7fb; --bg2:#ffffff;
+  --text:#0f172a; --muted:#475569;
+  --card:rgba(255,255,255,.85);
+  --border:rgba(2,6,23,.08);
+  --shadow:0 8px 22px rgba(2,6,23,.08);
+  --chip:rgba(2,6,23,.04);
+  --ring:#0891b2;
+  --good:#16a34a; --warn:#d97706; --bad:#dc2626; --info:#2563eb;
 }
-html, body, [data-testid="stAppViewContainer"]{background:linear-gradient(135deg,#0b1220 0%,#0b1220 40%,#111827 100%) !important;}
-.card{border-radius:18px;padding:18px 20px;background:rgba(255,255,255,0.06);backdrop-filter:blur(8px);
-      border:1px solid rgba(255,255,255,0.08); box-shadow:0 10px 30px rgba(0,0,0,.25);}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0b1220; --bg2:#111827;
+    --text:#e5e7eb; --muted:#94a3b8;
+    --card:rgba(255,255,255,.06);
+    --border:rgba(255,255,255,.10);
+    --shadow:0 10px 30px rgba(0,0,0,.25);
+    --chip:rgba(255,255,255,.09);
+    --ring:#22d3ee;
+    --good:#10b981; --warn:#f59e0b; --bad:#ef4444; --info:#3b82f6;
+  }
+}
+
+/* ---------- APP BACKGROUND & TEXT ---------- */
+html, body, [data-testid="stAppViewContainer"]{
+  background:linear-gradient(135deg,var(--bg) 0%,var(--bg) 40%,var(--bg2) 100%) !important;
+  color:var(--text);
+}
+
+/* ---------- CARDS / LAYOUT ---------- */
+.card{
+  border-radius:18px; padding:18px 20px; background:var(--card);
+  backdrop-filter:blur(8px); border:1px solid var(--border); box-shadow:var(--shadow);
+}
 .grid{display:grid; gap:14px;}
 .grid-4{grid-template-columns:repeat(4,minmax(0,1fr));}
+
+/* ---------- TYPO ---------- */
 .kpi{font-weight:800;font-size:2rem;line-height:1;margin:0;}
 .kpi-label{margin:2px 0 0 0;color:var(--muted);font-size:.9rem;}
+.small{color:var(--muted);font-size:.9rem}
+
+/* ---------- CHIPS / BADGES / BANNERS ---------- */
 .ribbon{display:inline-flex;align-items:center;gap:.6rem;margin-top:8px}
 .badge{padding:6px 12px;border-radius:9999px;font-weight:700;color:#fff;display:inline-flex;align-items:center;gap:.4rem}
-.badge.red{background:linear-gradient(135deg,#ef4444,#b91c1c)}
-.badge.amber{background:linear-gradient(135deg,#f59e0b,#b45309)}
-.badge.green{background:linear-gradient(135deg,#10b981,#047857)}
-.badge.blue{background:linear-gradient(135deg,#3b82f6,#1d4ed8)}
-.pill{padding:8px 14px;border-radius:9999px;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.12);
-      font-weight:700;color:#e5e7eb;display:inline-flex;align-items:center}
-.arrow{width:38px;height:38px;border-radius:10px;background:rgba(255,255,255,.12);display:grid;place-items:center;
-       border:1px solid rgba(255,255,255,.16);margin:0 8px}
-.sep{height:1px;background:rgba(255,255,255,.08);margin:12px 0}
-.banner{padding:10px 14px;border-radius:12px;display:inline-flex;align-items:center;gap:.6rem;font-weight:700}
-.banner.ok{background:rgba(16,185,129,.12); color:#a7f3d0; border:1px solid rgba(16,185,129,.25)}
-.banner.warn{background:rgba(245,158,11,.12); color:#fde68a; border:1px solid rgba(245,158,11,.25)}
-.small{color:var(--muted);font-size:.9rem}
+.badge.red{background:linear-gradient(135deg,var(--bad),#b91c1c)}
+.badge.amber{background:linear-gradient(135deg,var(--warn),#b45309)}
+.badge.green{background:linear-gradient(135deg,var(--good),#047857)}
+.badge.blue{background:linear-gradient(135deg,var(--info),#1d4ed8)}
+
+.pill{
+  padding:8px 14px;border-radius:9999px;background:var(--chip);
+  border:1px solid var(--border);font-weight:700;color:var(--text);
+  display:inline-flex;align-items:center
+}
+
+.banner{
+  padding:10px 14px;border-radius:12px;display:inline-flex;align-items:center;gap:.6rem;font-weight:700
+}
+.banner.ok{background:color-mix(in oklab, var(--good) 16%, transparent); color:color-mix(in oklab, var(--good) 85%, white);
+           border:1px solid color-mix(in oklab, var(--good) 30%, transparent)}
+.banner.warn{background:color-mix(in oklab, var(--warn) 16%, transparent); color:color-mix(in oklab, var(--warn) 85%, white);
+             border:1px solid color-mix(in oklab, var(--warn) 30%, transparent)}
+
+/* ---------- ROUTE STRIP ---------- */
 .route{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.arrow{
+  width:38px;height:38px;border-radius:10px;background:var(--chip);display:grid;place-items:center;
+  border:1px solid var(--border);margin:0 8px
+}
+
+/* ---------- MISC ---------- */
+.sep{height:1px;background:var(--border);margin:12px 0}
 .ticket{display:grid;grid-template-columns:1.2fr .8fr;gap:16px}
-.codebox{background:#0b1220;border:1px dashed rgba(255,255,255,.15);border-radius:12px;padding:10px}
+.codebox{background:var(--bg);border:1px dashed var(--border);border-radius:12px;padding:10px}
 </style>
 """, unsafe_allow_html=True)
 
@@ -199,8 +247,7 @@ def required_resource(severity: str) -> str:
 # ===============================
 # No-key geocoding + distances (Dhaka-biased + sanity filters)
 # ===============================
-# Rough Dhaka bounding box (lon_min, lat_min, lon_max, lat_max)
-DHAKA_VIEWBOX = (90.30, 23.69, 90.50, 23.90)
+DHAKA_VIEWBOX = (90.30, 23.69, 90.50, 23.90)  # lon_min, lat_min, lon_max, lat_max
 
 def _contact_email_for_user_agent() -> str:
     try:
@@ -221,10 +268,7 @@ def geocode_nominatim(query: str):
     url = "https://nominatim.openstreetmap.org/search"
     headers = {"User-Agent": f"dscc-dengue-allocator/1.1 ({_contact_email_for_user_agent()})"}
     params = {
-        "q": q,
-        "format": "json",
-        "limit": 1,
-        "countrycodes": "bd",
+        "q": q, "format": "json", "limit": 1, "countrycodes": "bd",
         "viewbox": f"{DHAKA_VIEWBOX[0]},{DHAKA_VIEWBOX[1]},{DHAKA_VIEWBOX[2]},{DHAKA_VIEWBOX[3]}",
         "bounded": 1,
     }
@@ -232,8 +276,7 @@ def geocode_nominatim(query: str):
         r = requests.get(url, headers=headers, params=params, timeout=15)
         r.raise_for_status()
         js = r.json()
-        if not js:
-            return None
+        if not js: return None
         lat = float(js[0]["lat"]); lon = float(js[0]["lon"])
         return (lat, lon)
     except Exception:
@@ -248,8 +291,7 @@ def haversine_km(lat1, lon1, lat2, lon2) -> float:
     return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1-a)))
 
 def osrm_drive(origin_ll, dest_ll):
-    if not origin_ll or not dest_ll:
-        return None
+    if not origin_ll or not dest_ll: return None
     o_lat, o_lon = origin_ll; d_lat, d_lon = dest_ll
     url = f"https://router.project-osrm.org/route/v1/driving/{o_lon},{o_lat};{d_lon},{d_lat}"
     params = {"overview": "false", "alternatives": "false", "steps": "false", "annotations": "false"}
@@ -257,8 +299,7 @@ def osrm_drive(origin_ll, dest_ll):
         r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
         js = r.json()
-        if js.get("code") != "Ok" or not js.get("routes"):
-            return None
+        if js.get("code") != "Ok" or not js.get("routes"): return None
         dist_km = js["routes"][0]["distance"] / 1000.0
         dur_min = js["routes"][0]["duration"] / 60.0
         return (dist_km, dur_min)
@@ -307,8 +348,7 @@ def nearest_available_by_user_location_no_key(user_query: str, date_any, bed_key
                                               top_k: int = 3, prefer_driving_eta: bool = False):
     """
     Returns (list, user_ll). Each item: {ui_name, av_name, remaining, distance_km, duration_min, lat, lng}
-    - Dhaka/BD biased geocoding
-    - sanity filter: drop absurd distances (>80 km)
+    Dhaka/BD bias + sanity filter: drop >80 km.
     """
     user_ll = geocode_nominatim(user_query)
     if not user_ll:
@@ -326,10 +366,8 @@ def nearest_available_by_user_location_no_key(user_query: str, date_any, bed_key
             osrm = osrm_drive(user_ll, h_ll)
             if osrm:
                 dist_km, dur_min = osrm
-
-        if dist_km > 80:  # sanity for Dhaka context
+        if dist_km > 80:
             continue
-
         enriched.append({
             **h,
             "distance_km": float(dist_km),
@@ -491,7 +529,7 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
     elif year_col and month_col:
         if day_col: df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
         else: df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" +
-                                           df[month_col].astype(int).astype(str) + "-01", errors="coerce")
+                                           df[month_col].astype(int).astype[str] + "-01", errors="coerce")
     else:
         raise ValueError("Provide either a Date column or (Year & Month) in predictions.")
     df = df.dropna(subset=["_Date"]); df["_Date"] = df["_Date"].dt.normalize()
@@ -660,12 +698,10 @@ with st.form("allocation_form"):
         igg_val = st.selectbox("IgG", [0,1], index=0, help="0=Negative, 1=Positive")
         st.caption(f"Time: **{granularity}** · Interp: **{interp_method if granularity!='Monthly' else 'N/A'}**")
 
-    # Location picker (selectbox of Dhaka areas) + free text override
     pick_area = st.selectbox("Pick a Dhaka area (optional)", ["—"] + DHAKA_AREAS, index=0)
     user_location_query = st.text_input("Or type your exact location", placeholder="e.g., House 10, Road 5, Dhanmondi")
     use_driving_eta = st.checkbox("Use driving ETA (beta via OSRM demo)", value=False)
 
-    # Multi-recipient email
     email_addresses = st.text_input("📧 Recipient Email(s)",
         placeholder="e.g., patient@gmail.com; doctor@hospital.org; admin@health.gov.bd")
     email_opt_in = st.checkbox("Send dengue allocation report via email", value=False)
@@ -681,7 +717,6 @@ note = ""
 debug_checks = []
 
 if submit:
-    # ---- Severity logic ----
     _, s_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
     severity = verdict_from_score(s_score)
     resource = required_resource(severity)
@@ -762,13 +797,9 @@ if submit:
     with right:
         st.markdown("**Summary**"); st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
         summary = {
-            "Severity": severity,
-            "Resource": resource,
-            "Severity Score": s_score,
-            "Hospital Tried": tried,
-            "Available at Current Hospital": available_status,
-            "Assigned Hospital": assigned_av,
-            "Distance (km)": float(rerouted_distance) if rerouted_distance is not None else None
+            "Severity": severity, "Resource": resource, "Severity Score": s_score,
+            "Hospital Tried": tried, "Available at Current Hospital": available_status,
+            "Assigned Hospital": assigned_av, "Distance (km)": float(rerouted_distance) if rerouted_distance is not None else None
         }
         st.markdown('<div class="codebox">', unsafe_allow_html=True)
         st.json(summary)
@@ -778,12 +809,10 @@ if submit:
     st.progress(sev_percent(severity))
 
     # ---------- Nearest by user location ----------
-    # Use selectbox pick unless user typed explicit free text
     chosen_loc = user_location_query.strip() if user_location_query.strip() else (pick_area if pick_area != "—" else "")
     nearest_list = []
     user_ll = None
-    should_suggest = (chosen_loc != "") and ((available_status != "Yes") or True)  # always suggest if a location is given
-    if should_suggest:
+    if chosen_loc:
         try:
             bed_key_needed = "ICU" if resource == "ICU" else "Normal"
             nearest_list, user_ll = nearest_available_by_user_location_no_key(
@@ -802,33 +831,30 @@ if submit:
         } for n in nearest_list])
         st.dataframe(df_near, use_container_width=True)
 
-        # ---- Map with white user pin + red hospital pins (pydeck) ----
+        # Map: white user pin + red hospital pins
         layers = []
         if user_ll:
             user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
-            layers.append(pdk.Layer(
-                "ScatterplotLayer", user_df,
-                get_position="[lon, lat]", get_radius=80,
-                get_fill_color=[255,255,255,220], pickable=False))
+            layers.append(pdk.Layer("ScatterplotLayer", user_df,
+                                    get_position="[lon, lat]", get_radius=80,
+                                    get_fill_color=[255,255,255,220], pickable=False))
         hosp_rows = []
         for n in nearest_list:
             if n["lat"] and n["lng"]:
                 hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
         if hosp_rows:
             hosp_df = pd.DataFrame(hosp_rows)
-            layers.append(pdk.Layer(
-                "ScatterplotLayer", hosp_df,
-                get_position="[lon, lat]", get_radius=70,
-                get_fill_color=[255,0,0,220], pickable=True))
+            layers.append(pdk.Layer("ScatterplotLayer", hosp_df,
+                                    get_position="[lon, lat]", get_radius=70,
+                                    get_fill_color=[255,0,0,220], pickable=True))
         if layers:
-            # center on user if available otherwise on first hospital
             center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
             view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
             st.pydeck_chart(pdk.Deck(map_style=None, initial_view_state=view_state, layers=layers), use_container_width=True)
     else:
         st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
 
-    # ---------- Email the result to multiple recipients ----------
+    # ---------- Email ----------
     beds_pred = icu_pred = 0
     if assigned_av:
         assigned_counts = get_avail_counts(assigned_av, date_input)
@@ -837,15 +863,10 @@ if submit:
 
     if email_opt_in and email_addresses.strip():
         html = build_allocation_email_html(
-            patient_age=age,
-            severity=severity,
-            resource=resource,
-            tried_hospital_ui=hospital_ui,
-            assigned_hospital_av=(assigned_av or "—"),
-            date_any=date_input,
-            distance_km=(float(rerouted_distance) if rerouted_distance is not None else 0.0),
-            beds_avail=beds_pred,
-            icu_avail=icu_pred,
+            patient_age=age, severity=severity, resource=resource,
+            tried_hospital_ui=hospital_ui, assigned_hospital_av=(assigned_av or "—"),
+            date_any=date_input, distance_km=(float(rerouted_distance) if rerouted_distance is not None else 0.0),
+            beds_avail=beds_pred, icu_avail=icu_pred,
             nearest=(nearest_list if chosen_loc else None),
             user_location=(f"{chosen_loc} — {'driving (OSRM)' if use_driving_eta else 'straight-line'}" if chosen_loc else None),
         )
@@ -868,7 +889,7 @@ if submit:
             st.write("No neighbor checks — assigned at selected hospital.")
 
 # ===============================
-# Dashboard: show hospital month info
+# Dashboard
 # ===============================
 st.markdown("---")
 st.header("📊 Hospital Monthly Dashboard")
