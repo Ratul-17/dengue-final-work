@@ -6,12 +6,13 @@ import re
 import math
 import requests
 import smtplib, ssl
-from email.message import EmailMessage
+import pydeck as pdk
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from functools import lru_cache
 from difflib import get_close_matches
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Optional, List
 
@@ -43,6 +44,19 @@ HOSPITALS_UI = [
     "Green Life Medical Hospital",
     "Sirajul Islam Medical College Hospital",
     "Ad-Din Medical College Hospital",
+]
+
+# Common Dhaka areas (you can add more later)
+DHAKA_AREAS = [
+    "Dhanmondi","Mohammadpur","Gulshan","Banani","Baridhara","Uttara","Mirpur","Kafrul","Pallabi",
+    "Tejgaon","Farmgate","Kawran Bazar","Panthapath","Kalabagan","New Market","Science Lab",
+    "Elephant Road","Lalmatia","Shyamoli","Agargaon","Sher-e-Bangla Nagar","Kallyanpur","Gabtoli",
+    "Hazaribagh","Rayer Bazar","Jhigatola","Azimpur","Lalbagh","Chankharpul","Shahbagh","Paltan",
+    "Motijheel","Dilkusha","Wari","Sutrapur","Kotwali","Bangshal","Chawkbazar","Sadarghat","Narinda",
+    "Ramna","Eskaton","Moghbazar","Mouchak","Malibagh","Rampura","Banasree","Aftabnagar","Badda",
+    "Khilgaon","Basabo","Shantinagar","Kakrail","Motsho Bhaban","Khilkhet","Nikunja","Airport",
+    "Cantonment","Mohakhali","Banani DOHS","Baridhara DOHS","Bashundhara R/A","Notun Bazar",
+    "Jatrabari","Demra","Keraniganj","Kamalapur","Sayedabad","Tikatuli","Arambagh","Paribagh"
 ]
 
 # ===============================
@@ -90,12 +104,6 @@ def resource_badge(res:str)->str:
     color = "red" if res=="ICU" else "blue"
     return f'<span class="badge {color}">{res}</span>'
 
-def availability_badge(txt:str)->str:
-    if txt == "Yes": color = "green"
-    elif "No vacancy" in txt: color = "amber"
-    else: color = "blue"
-    return f'<span class="badge {color}">{txt}</span>'
-
 def sev_percent(sev:str)->int:
     return {"Mild":25,"Moderate":50,"Severe":75,"Very Severe":100}.get(sev,50)
 
@@ -116,13 +124,6 @@ def autodetect(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
             if patt.lower() in str(c).lower():
                 return c
     return None
-
-def parse_date_series(s: pd.Series) -> pd.Series:
-    def _one(x):
-        if isinstance(x, (pd.Timestamp, datetime)): return pd.to_datetime(x).date()
-        try: return pd.to_datetime(x, errors="coerce").date()
-        except: return pd.NaT
-    return s.apply(_one)
 
 def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy(); df.columns = [str(c).strip() for c in df.columns]
@@ -196,21 +197,37 @@ def required_resource(severity: str) -> str:
     return "ICU" if severity in ("Severe", "Very Severe") else "General Bed"
 
 # ===============================
-# No-key geocoding + distances (OSM + Haversine + optional OSRM)
+# No-key geocoding + distances (Dhaka-biased + sanity filters)
 # ===============================
+# Rough Dhaka bounding box (lon_min, lat_min, lon_max, lat_max)
+DHAKA_VIEWBOX = (90.30, 23.69, 90.50, 23.90)
+
 def _contact_email_for_user_agent() -> str:
     try:
         return st.secrets.get("contact", {}).get("email", "dengue-allocator@example.com")
     except Exception:
         return "dengue-allocator@example.com"
 
+def _with_bd_context(q: str) -> str:
+    s = (q or "").strip()
+    s_l = s.lower()
+    if ("bangladesh" not in s_l) and ("dhaka" not in s_l):
+        s = f"{s}, Dhaka, Bangladesh"
+    return s
+
 @lru_cache(maxsize=512)
 def geocode_nominatim(query: str):
-    if not query or not str(query).strip():
-        return None
+    q = _with_bd_context(query)
     url = "https://nominatim.openstreetmap.org/search"
-    headers = {"User-Agent": f"dscc-dengue-allocator/1.0 ({_contact_email_for_user_agent()})"}
-    params = {"q": query, "format": "json", "limit": 1}
+    headers = {"User-Agent": f"dscc-dengue-allocator/1.1 ({_contact_email_for_user_agent()})"}
+    params = {
+        "q": q,
+        "format": "json",
+        "limit": 1,
+        "countrycodes": "bd",
+        "viewbox": f"{DHAKA_VIEWBOX[0]},{DHAKA_VIEWBOX[1]},{DHAKA_VIEWBOX[2]},{DHAKA_VIEWBOX[3]}",
+        "bounded": 1,
+    }
     try:
         r = requests.get(url, headers=headers, params=params, timeout=15)
         r.raise_for_status()
@@ -269,10 +286,13 @@ HOSPITAL_PLACES = {
     "Ad-Din Medical College Hospital": "Ad-Din Medical College Hospital, Dhaka, Bangladesh",
 }
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=256)
 def geocode_hospital(ui_name: str):
-    place = HOSPITAL_PLACES.get(ui_name, f"{ui_name}, Dhaka, Bangladesh")
-    return geocode_nominatim(place)
+    q1 = HOSPITAL_PLACES.get(ui_name, f"{ui_name}, Dhaka, Bangladesh")
+    ll = geocode_nominatim(q1)
+    if ll: return ll
+    cleaned = re.sub(r"hospital|medical|college|&|,"," ", ui_name, flags=re.I).strip()
+    return geocode_nominatim(cleaned)
 
 def hospitals_with_vacancy_on_date(date_any, bed_key: str) -> list[dict]:
     results = []
@@ -283,15 +303,17 @@ def hospitals_with_vacancy_on_date(date_any, bed_key: str) -> list[dict]:
             results.append({"ui_name": ui_name, "av_name": av_name, "remaining": rem})
     return results
 
-def nearest_available_by_user_location_no_key(user_query: str, date_any, bed_key: str, top_k: int = 3,
-                                              prefer_driving_eta: bool = False):
+def nearest_available_by_user_location_no_key(user_query: str, date_any, bed_key: str,
+                                              top_k: int = 3, prefer_driving_eta: bool = False):
     """
-    Returns (list, user_ll) where list items contain:
-      {ui_name, av_name, remaining, distance_km, duration_min (maybe), lat, lng}
+    Returns (list, user_ll). Each item: {ui_name, av_name, remaining, distance_km, duration_min, lat, lng}
+    - Dhaka/BD biased geocoding
+    - sanity filter: drop absurd distances (>80 km)
     """
     user_ll = geocode_nominatim(user_query)
     if not user_ll:
         return [], None
+
     cand = hospitals_with_vacancy_on_date(date_any, bed_key)
     enriched = []
     for h in cand:
@@ -304,12 +326,17 @@ def nearest_available_by_user_location_no_key(user_query: str, date_any, bed_key
             osrm = osrm_drive(user_ll, h_ll)
             if osrm:
                 dist_km, dur_min = osrm
+
+        if dist_km > 80:  # sanity for Dhaka context
+            continue
+
         enriched.append({
             **h,
             "distance_km": float(dist_km),
             "duration_min": (float(dur_min) if dur_min is not None else None),
             "lat": h_ll[0], "lng": h_ll[1],
         })
+
     enriched.sort(key=lambda x: x["distance_km"])
     return enriched[:top_k], user_ll
 
@@ -373,27 +400,21 @@ def build_allocation_email_html(*, patient_age:int, severity:str, resource:str,
         <tr><td style="padding:10px 12px;border:1px solid #e2e8f0;background:#f8fafc"><strong>Predicted ICU Beds Available</strong></td><td style="padding:10px 12px;border:1px solid #e2e8f0">{icu_avail}</td></tr>
       </table>
       {nearest_block}
-      <p style="margin-top:16px;color:#475569">Distances are estimates (straight-line or OSRM driving if enabled); availability is based on your selected time granularity.</p>
+      <p style="margin-top:16px;color:#475569">Distances are estimates (straight-line or OSRM driving if enabled); availability is based on your selected date.</p>
     </div>
     """
 
 def send_email_multi(recipients, subject, html_body):
-    """
-    Send an HTML email to multiple recipients.
-    `recipients` can be a list[str] or a comma/semicolon-separated string.
-    Uses st.secrets['smtp'] for host/port/user/password/sender.
-    """
+    """Send HTML email to multiple recipients using st.secrets['smtp']."""
     try:
         if "smtp" not in st.secrets:
             raise RuntimeError("SMTP secrets not configured in Streamlit (Settings → Secrets).")
-
         cfg = st.secrets["smtp"]
         smtp_host = cfg.get("host", "smtp.gmail.com")
         smtp_port = int(cfg.get("port", 465))
         smtp_user = cfg.get("user")
         smtp_pass = cfg.get("password")
         sender = cfg.get("sender", smtp_user)
-
         if not all([smtp_host, smtp_port, smtp_user, smtp_pass, sender]):
             raise RuntimeError("Incomplete SMTP config. Set host/port/user/password/sender in secrets.")
 
@@ -405,14 +426,11 @@ def send_email_multi(recipients, subject, html_body):
             raise ValueError("No valid recipient emails provided.")
 
         context = ssl.create_default_context()
-        # connect
         if smtp_port == 465:
             server = smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=20)
         else:
             server = smtplib.SMTP(smtp_host, smtp_port, timeout=20)
-            server.ehlo()
-            server.starttls(context=context)
-            server.ehlo()
+            server.ehlo(); server.starttls(context=context); server.ehlo()
         server.login(smtp_user, smtp_pass)
 
         sent_ok, sent_fail = [], []
@@ -427,14 +445,9 @@ def send_email_multi(recipients, subject, html_body):
                 sent_ok.append(rcp)
             except Exception as e:
                 sent_fail.append((rcp, str(e)))
-
-        try:
-            server.quit()
-        except Exception:
-            pass
-
+        try: server.quit()
+        except: pass
         return {"sent_ok": sent_ok, "sent_fail": sent_fail}
-
     except Exception as e:
         return {"sent_ok": [], "sent_fail": [("ALL", str(e))]}
 
@@ -547,14 +560,12 @@ dist_mat = build_distance_matrix(df_loc)
 DM_TO_AV, UI_TO_DM, UI_TO_AV = build_name_maps(availability, dist_mat, HOSPITALS_UI)
 
 # ===============================
-# Allocation helpers
+# Allocation helpers (state + fns)
 # ===============================
 if "reservations" not in st.session_state:
     st.session_state["reservations"] = {}
-
 if "served" not in st.session_state:
     st.session_state["served"] = {}
-
 if "reroute_log" not in st.session_state:
     st.session_state["reroute_log"] = []
 
@@ -591,8 +602,7 @@ def month_str_from_date(dt) -> str:
     return pd.to_datetime(dt).strftime("%Y-%m")
 
 def increment_served(hospital_av_name: str, date) -> None:
-    if not hospital_av_name:
-        return
+    if not hospital_av_name: return
     m = month_str_from_date(date)
     key = (hospital_av_name, m)
     st.session_state["served"][key] = st.session_state["served"].get(key, 0) + 1
@@ -650,19 +660,14 @@ with st.form("allocation_form"):
         igg_val = st.selectbox("IgG", [0,1], index=0, help="0=Negative, 1=Positive")
         st.caption(f"Time: **{granularity}** · Interp: **{interp_method if granularity!='Monthly' else 'N/A'}**")
 
-    # Location inputs (no API key needed)
-    user_location_query = st.text_input(
-        "Your current location (area, landmark or full address)",
-        placeholder="e.g., Dhanmondi, Dhaka"
-    )
-    suggest_by_location = st.checkbox("🔎 Suggest nearest hospitals with vacancy (no API key)", value=False)
+    # Location picker (selectbox of Dhaka areas) + free text override
+    pick_area = st.selectbox("Pick a Dhaka area (optional)", ["—"] + DHAKA_AREAS, index=0)
+    user_location_query = st.text_input("Or type your exact location", placeholder="e.g., House 10, Road 5, Dhanmondi")
     use_driving_eta = st.checkbox("Use driving ETA (beta via OSRM demo)", value=False)
 
     # Multi-recipient email
-    email_addresses = st.text_input(
-        "📧 Recipient Email(s)",
-        placeholder="e.g., patient@gmail.com; doctor@hospital.org; admin@health.gov.bd"
-    )
+    email_addresses = st.text_input("📧 Recipient Email(s)",
+        placeholder="e.g., patient@gmail.com; doctor@hospital.org; admin@health.gov.bd")
     email_opt_in = st.checkbox("Send dengue allocation report via email", value=False)
 
     submit = st.form_submit_button("🚑 Allocate")
@@ -677,7 +682,7 @@ debug_checks = []
 
 if submit:
     # ---- Severity logic ----
-    p_score, s_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
+    _, s_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
     severity = verdict_from_score(s_score)
     resource = required_resource(severity)
     bed_key  = "ICU" if resource == "ICU" else "Normal"
@@ -703,7 +708,6 @@ if submit:
     st.subheader("Allocation Result")
     st.markdown('<div class="grid grid-4">', unsafe_allow_html=True)
 
-    # 1) Severity score card
     st.markdown(f'''
       <div class="card">
         <div class="kpi">{s_score}</div>
@@ -712,7 +716,6 @@ if submit:
       </div>
     ''', unsafe_allow_html=True)
 
-    # 2) Resource needed
     st.markdown(f'''
       <div class="card">
         <div class="kpi">{resource}</div>
@@ -721,7 +724,6 @@ if submit:
       </div>
     ''', unsafe_allow_html=True)
 
-    # 3) Date
     st.markdown(f'''
       <div class="card">
         <div class="kpi">{pd.to_datetime(date_input).date()}</div>
@@ -730,7 +732,6 @@ if submit:
       </div>
     ''', unsafe_allow_html=True)
 
-    # 4) Travel distance (from tried to assigned via location matrix)
     dist_txt = f"{float(rerouted_distance):.1f} km" if rerouted_distance is not None else "—"
     st.markdown(f'''
       <div class="card">
@@ -739,10 +740,8 @@ if submit:
         <div class="ribbon"><span class="badge blue">{interp_method if granularity!='Monthly' else 'N/A'}</span></div>
       </div>
     ''', unsafe_allow_html=True)
-
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Ticket
     st.markdown('<div class="card ticket">', unsafe_allow_html=True)
     left, right = st.columns([1.2,.8], gap="medium")
     with left:
@@ -751,7 +750,6 @@ if submit:
         else:
             st.markdown('<div class="banner warn">⚠️ No vacancy available here — finding nearest option…</div>', unsafe_allow_html=True)
         st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
-
         tried = hospital_ui
         st.markdown(f"**Hospital Tried:** {tried}", unsafe_allow_html=True)
         st.markdown('<div class="route" style="margin-top:8px">', unsafe_allow_html=True)
@@ -761,10 +759,8 @@ if submit:
         st.markdown(final_chip, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
         st.caption(f"Note: **{note}**")
-
     with right:
-        st.markdown("**Summary**")
-        st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
+        st.markdown("**Summary**"); st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
         summary = {
             "Severity": severity,
             "Resource": resource,
@@ -777,50 +773,62 @@ if submit:
         st.markdown('<div class="codebox">', unsafe_allow_html=True)
         st.json(summary)
         st.markdown('</div>', unsafe_allow_html=True)
-
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Progress
     st.progress(sev_percent(severity))
 
-    # ---------- Nearest by user location (no key) ----------
+    # ---------- Nearest by user location ----------
+    # Use selectbox pick unless user typed explicit free text
+    chosen_loc = user_location_query.strip() if user_location_query.strip() else (pick_area if pick_area != "—" else "")
     nearest_list = []
     user_ll = None
-    if suggest_by_location and user_location_query.strip():
+    should_suggest = (chosen_loc != "") and ((available_status != "Yes") or True)  # always suggest if a location is given
+    if should_suggest:
         try:
             bed_key_needed = "ICU" if resource == "ICU" else "Normal"
             nearest_list, user_ll = nearest_available_by_user_location_no_key(
-                user_location_query.strip(), date_input, bed_key_needed,
-                top_k=3, prefer_driving_eta=use_driving_eta
+                chosen_loc, date_input, bed_key_needed, top_k=3, prefer_driving_eta=use_driving_eta
             )
         except Exception as e:
             st.warning(f"Could not fetch nearest hospitals: {e}")
 
-    if suggest_by_location:
-        st.markdown("### 🗺️ Nearest hospitals with vacancy (by your location)")
-        if nearest_list:
-            df_near = pd.DataFrame([{
-                "Hospital": n["ui_name"],
-                "Vacancy (Beds/ICU)": n["remaining"],
-                "Distance (km)": round(n["distance_km"], 1),
-                "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") is not None else None),
-            } for n in nearest_list])
-            st.dataframe(df_near, use_container_width=True)
+    st.markdown("### 🗺️ Nearest hospitals with vacancy (by your location)")
+    if chosen_loc and nearest_list:
+        df_near = pd.DataFrame([{
+            "Hospital": n["ui_name"],
+            "Vacancy (Beds/ICU)": n["remaining"],
+            "Distance (km)": round(n["distance_km"], 1),
+            "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") is not None else None),
+        } for n in nearest_list])
+        st.dataframe(df_near, use_container_width=True)
 
-            # map markers
-            map_rows = []
-            if user_ll:
-                map_rows.append({"name": "You", "lat": user_ll[0], "lon": user_ll[1]})
-            for n in nearest_list:
-                if n["lat"] and n["lng"]:
-                    map_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
-            if map_rows:
-                st.map(pd.DataFrame(map_rows), size=60)
-        else:
-            st.info("No nearby hospitals with vacancy for the required resource right now.")
+        # ---- Map with white user pin + red hospital pins (pydeck) ----
+        layers = []
+        if user_ll:
+            user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
+            layers.append(pdk.Layer(
+                "ScatterplotLayer", user_df,
+                get_position="[lon, lat]", get_radius=80,
+                get_fill_color=[255,255,255,220], pickable=False))
+        hosp_rows = []
+        for n in nearest_list:
+            if n["lat"] and n["lng"]:
+                hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
+        if hosp_rows:
+            hosp_df = pd.DataFrame(hosp_rows)
+            layers.append(pdk.Layer(
+                "ScatterplotLayer", hosp_df,
+                get_position="[lon, lat]", get_radius=70,
+                get_fill_color=[255,0,0,220], pickable=True))
+        if layers:
+            # center on user if available otherwise on first hospital
+            center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
+            view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
+            st.pydeck_chart(pdk.Deck(map_style=None, initial_view_state=view_state, layers=layers), use_container_width=True)
+    else:
+        st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
 
     # ---------- Email the result to multiple recipients ----------
-    # predicted counts on selected day for assigned hospital (not subtracting session reservations)
     beds_pred = icu_pred = 0
     if assigned_av:
         assigned_counts = get_avail_counts(assigned_av, date_input)
@@ -838,9 +846,8 @@ if submit:
             distance_km=(float(rerouted_distance) if rerouted_distance is not None else 0.0),
             beds_avail=beds_pred,
             icu_avail=icu_pred,
-            nearest=(nearest_list if suggest_by_location else None),
-            user_location=(f"{user_location_query} — {'driving (OSRM)' if use_driving_eta else 'straight-line'}"
-                           if suggest_by_location else None),
+            nearest=(nearest_list if chosen_loc else None),
+            user_location=(f"{chosen_loc} — {'driving (OSRM)' if use_driving_eta else 'straight-line'}" if chosen_loc else None),
         )
         subj = f"[Dengue Allocation] {severity} — {resource} · {pd.to_datetime(date_input).date()}"
         res = send_email_multi(email_addresses, subj, html)
