@@ -1,7 +1,6 @@
 # streamlit_app.py
 from __future__ import annotations
 
-import os
 import re
 import math
 import ssl
@@ -9,8 +8,7 @@ import requests
 from pathlib import Path
 from functools import lru_cache
 from difflib import get_close_matches
-from datetime import datetime, date
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 
 import streamlit as st
 import pandas as pd
@@ -51,7 +49,7 @@ HOSPITALS_UI = [
     "Ad-Din Medical College Hospital",
 ]
 
-# Common Dhaka areas (extend any time)
+# Common Dhaka areas (used only in Individual view)
 DHAKA_AREAS = [
     "Dhanmondi","Mohammadpur","Gulshan","Banani","Baridhara","Uttara","Mirpur","Kafrul","Pallabi",
     "Tejgaon","Farmgate","Kawran Bazar","Panthapath","Kalabagan","New Market","Science Lab",
@@ -182,7 +180,6 @@ def autodetect(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
 def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
-    # If first column is index label, or matrix provided with first column as row labels
     if df.shape[1] >= 2:
         first_col = df.columns[0]
         other_cols = df.columns[1:]
@@ -264,7 +261,7 @@ def required_resource(severity: str) -> str:
     return "ICU" if severity in ("Severe", "Very Severe") else "General Bed"
 
 # ===============================
-# No-key geocoding + distances (Dhaka-biased + sanity filters)
+# Geocoding & distances (used by Individual view only)
 # ===============================
 DHAKA_VIEWBOX = (90.30, 23.69, 90.50, 23.90)  # lon_min, lat_min, lon_max, lat_max
 
@@ -365,10 +362,6 @@ def hospitals_with_vacancy_on_date(date_any, bed_key: str) -> List[dict]:
 
 def nearest_available_by_user_location_no_key(user_query: str, date_any, bed_key: str,
                                               top_k: int = 3, prefer_driving_eta: bool = False):
-    """
-    Returns (list, user_ll). Each item: {ui_name, av_name, remaining, distance_km, duration_min, lat, lng}
-    Dhaka/BD bias + sanity filter: drop >80 km.
-    """
     user_ll = geocode_nominatim(user_query)
     if not user_ll:
         return [], None
@@ -406,13 +399,6 @@ def is_valid_email(addr: str) -> bool:
     return isinstance(addr, str) and bool(EMAIL_RE.match(addr.strip()))
 
 def parse_name_from_email(email: str) -> str:
-    """
-    Parse a friendly display name from the email local part.
-    Examples:
-      md.ariful.khan@example.com -> Md. Ariful Khan
-      ariful123@example.com -> Ariful
-      ariful_rahman@example.com -> Ariful Rahman
-    """
     if not isinstance(email, str) or "@" not in email:
         return ""
     local = email.split("@", 1)[0]
@@ -501,11 +487,6 @@ def build_allocation_email_html(*, patient_age:int, severity:str, resource:str,
     """
 
 def send_email_multi(recipients, subject, html_body, personalize: bool = True):
-    """
-    Send HTML email to multiple recipients using st.secrets['smtp'].
-    If personalize=True, each recipient will receive a personalized greeting parsed from their email address.
-    Returns dict with lists: sent_ok, sent_fail.
-    """
     try:
         if "smtp" not in st.secrets:
             raise RuntimeError("SMTP secrets not configured in Streamlit (Settings → Secrets).")
@@ -518,7 +499,6 @@ def send_email_multi(recipients, subject, html_body, personalize: bool = True):
         if not all([smtp_host, smtp_port, smtp_user, smtp_pass, sender]):
             raise RuntimeError("Incomplete SMTP config. Set host/port/user/password/sender in secrets.")
 
-        # normalize recipients
         if isinstance(recipients, str):
             recipients = [p.strip() for p in re.split(r"[;,]", recipients) if p.strip()]
         recipients = [r for r in recipients if is_valid_email(r)]
@@ -535,7 +515,6 @@ def send_email_multi(recipients, subject, html_body, personalize: bool = True):
 
         sent_ok, sent_fail = [], []
         for rcp in recipients:
-            # personalize per recipient
             try:
                 personal_html = html_body
                 if personalize:
@@ -635,7 +614,6 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
         availability.index = availability.index.set_names(["_Hospital","_Date"])
         return availability
 
-    # Expand to Daily (and weekly if needed)
     df_ts = df.set_index("_Date")
     beds_piv = df_ts.pivot_table(index=df_ts.index, columns="_Hospital", values="_BedsAvail", aggfunc="mean")
     icu_piv  = df_ts.pivot_table(index=df_ts.index, columns="_Hospital", values="_ICUAvail",  aggfunc="mean")
@@ -793,7 +771,7 @@ max_d = max(all_dates) if all_dates else pd.to_datetime("today").normalize()
 # ===============================
 tab_individual, tab_management = st.tabs(["Individual View", "Management View"])
 
-# ---------- Individual View (unchanged) ----------
+# ---------- Individual View ----------
 with tab_individual:
     st.header("🧑‍⚕️ Individual Allocation")
     with st.form("allocation_form_individual"):
@@ -822,9 +800,8 @@ with tab_individual:
 
         submit = st.form_submit_button("🚑 Allocate (Individual)")
 
-    # Allocation logic for individual
+    # Allocation logic for individual (unchanged)
     if submit:
-        # reuse same logic as management allocation below (see function form)
         _, s_score = compute_severity_score(st.session_state["ind_age"], st.session_state["ind_ns1"], st.session_state["ind_igm"], st.session_state["ind_igg"], st.session_state["ind_platelet"])
         severity = verdict_from_score(s_score)
         resource = required_resource(severity)
@@ -847,7 +824,7 @@ with tab_individual:
             if assigned_av != (start_av or st.session_state["ind_hospital"]):
                 log_reroute(st.session_state["ind_hospital"], assigned_av, st.session_state["ind_date"])
 
-        # UI result (same as before)...
+        # UI result ...
         st.subheader("Allocation Result (Individual)")
         st.markdown('<div class="grid grid-4">', unsafe_allow_html=True)
         st.markdown(f'''
@@ -911,7 +888,7 @@ with tab_individual:
         st.markdown('</div>', unsafe_allow_html=True)
         st.progress(sev_percent(severity))
 
-        # Nearest by user location display
+        # Nearest by user location (individual only)...
         chosen_loc = st.session_state["ind_userloc"].strip() if st.session_state["ind_userloc"].strip() else (st.session_state["ind_area"] if st.session_state["ind_area"] != "—" else "")
         nearest_list = []
         user_ll = None
@@ -956,7 +933,7 @@ with tab_individual:
         else:
             st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
 
-        # Email for individual
+        # Email for individual (unchanged)
         beds_pred = icu_pred = 0
         if assigned_av:
             assigned_counts = get_avail_counts(assigned_av, st.session_state["ind_date"])
@@ -979,11 +956,12 @@ with tab_individual:
             if res["sent_fail"]:
                 st.warning(f"Some emails failed: {res['sent_fail']}")
 
-# ---------- Management View (now includes allocation form) ----------
+# ---------- Management View (simplified allocation form) ----------
 with tab_management:
     st.header("📊 Management View — Dashboard & Allocation")
     st.markdown("Use the management allocation form to create allocations directly from this view (commits reservation & updates dashboards).")
-    # Management allocation form (same fields, different keys)
+
+    # Management allocation form (simplified — no location/email controls)
     with st.form("allocation_form_management"):
         st.subheader("🛠️ Management Allocation (Admin)")
         m1,m2,m3,m4 = st.columns([1.2,1,1,1])
@@ -1000,16 +978,10 @@ with tab_management:
         with m4:
             mgmt_igg = st.selectbox("IgG", [0,1], index=0, key="mgmt_alloc_igg")
             st.caption(f"Time: **{granularity}** · Interp: **{interp_method if granularity!='Monthly' else 'N/A'}**")
-        mgmt_pick_area = st.selectbox("Pick a Dhaka area (optional)", ["—"] + DHAKA_AREAS, index=0, key="mgmt_alloc_area")
-        mgmt_user_location_query = st.text_input("Or type exact location", placeholder="e.g., House 10, Road 5, Dhanmondi", key="mgmt_alloc_userloc")
-        mgmt_use_driving_eta = st.checkbox("Use driving ETA (beta)", value=False, key="mgmt_alloc_osrm")
-
-        mgmt_email_addresses = st.text_input("📧 Recipient Email(s) for allocation (optional)", placeholder="patient@example.com; doctor@hospital.org", key="mgmt_alloc_emails")
-        mgmt_email_opt_in = st.checkbox("Send email for this allocation (personalized)", value=False, key="mgmt_alloc_email_opt")
 
         mgmt_submit = st.form_submit_button("🚑 Allocate (Management)")
 
-    # When management allocation submitted
+    # When management allocation submitted (no location/email logic)
     if mgmt_submit:
         _, s_score = compute_severity_score(st.session_state["mgmt_alloc_age"], st.session_state["mgmt_alloc_ns1"], st.session_state["mgmt_alloc_igm"], st.session_state["mgmt_alloc_igg"], st.session_state["mgmt_alloc_platelet"])
         severity = verdict_from_score(s_score)
@@ -1033,7 +1005,7 @@ with tab_management:
             if assigned_av != (start_av or st.session_state["mgmt_alloc_hospital"]):
                 log_reroute(st.session_state["mgmt_alloc_hospital"], assigned_av, st.session_state["mgmt_alloc_date"])
 
-        # Management allocation result UI
+        # Management allocation result UI (simplified)
         st.subheader("Allocation Result (Management)")
         st.markdown('<div class="grid grid-4">', unsafe_allow_html=True)
         st.markdown(f'''
@@ -1097,70 +1069,7 @@ with tab_management:
         st.markdown('</div>', unsafe_allow_html=True)
         st.progress(sev_percent(severity))
 
-        # show nearest by admin-provided location
-        chosen_loc = st.session_state["mgmt_alloc_userloc"].strip() if st.session_state["mgmt_alloc_userloc"].strip() else (st.session_state["mgmt_alloc_area"] if st.session_state["mgmt_alloc_area"] != "—" else "")
-        nearest_list = []
-        user_ll = None
-        if chosen_loc:
-            try:
-                bed_key_needed = "ICU" if resource == "ICU" else "Normal"
-                nearest_list, user_ll = nearest_available_by_user_location_no_key(
-                    chosen_loc, st.session_state["mgmt_alloc_date"], bed_key_needed, top_k=5, prefer_driving_eta=st.session_state["mgmt_alloc_osrm"]
-                )
-            except Exception as e:
-                st.warning(f"Could not fetch nearest hospitals: {e}")
-
-        st.markdown("### 🗺️ Nearest hospitals with vacancy (by provided location)")
-        if chosen_loc and nearest_list:
-            df_near = pd.DataFrame([{
-                "Hospital": n["ui_name"],
-                "Vacancy (Beds/ICU)": n["remaining"],
-                "Distance (km)": round(n["distance_km"], 1),
-                "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") is not None else None),
-            } for n in nearest_list])
-            st.dataframe(df_near, use_container_width=True)
-
-            layers = []
-            if user_ll:
-                user_df = pd.DataFrame([{"name":"User","lat":user_ll[0],"lon":user_ll[1]}])
-                layers.append(pdk.Layer("ScatterplotLayer", user_df,
-                                        get_position="[lon, lat]", get_radius=80,
-                                        get_fill_color=[255,255,255,220], pickable=False))
-            hosp_rows = []
-            for n in nearest_list:
-                if n.get("lat") and n.get("lng"):
-                    hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
-            if hosp_rows:
-                hosp_df = pd.DataFrame(hosp_rows)
-                layers.append(pdk.Layer("ScatterplotLayer", hosp_df,
-                                        get_position="[lon, lat]", get_radius=70,
-                                        get_fill_color=[255,0,0,220], pickable=True))
-            if layers:
-                center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
-                view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
-                st.pydeck_chart(pdk.Deck(map_style=None, initial_view_state=view_state, layers=layers), use_container_width=True)
-        else:
-            st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
-
-        # Email option for management allocation
-        if st.session_state["mgmt_alloc_email_opt"] and st.session_state["mgmt_alloc_emails"].strip():
-            base_html = build_allocation_email_html(
-                patient_age=st.session_state["mgmt_alloc_age"], severity=severity, resource=resource,
-                tried_hospital_ui=st.session_state["mgmt_alloc_hospital"], assigned_hospital_av=(assigned_av or "—"),
-                date_any=st.session_state["mgmt_alloc_date"], distance_km=(float(rerouted_distance) if rerouted_distance is not None else 0.0),
-                beds_avail=(get_avail_counts(assigned_av, st.session_state["mgmt_alloc_date"])["beds_available"] if assigned_av else 0),
-                icu_avail=(get_avail_counts(assigned_av, st.session_state["mgmt_alloc_date"])["icu_available"] if assigned_av else 0),
-                nearest=(nearest_list if chosen_loc else None),
-                user_location=(f"{chosen_loc} — {'driving (OSRM)' if st.session_state['mgmt_alloc_osrm'] else 'straight-line'}" if chosen_loc else None),
-            )
-            subj = f"[Dengue Allocation] {severity} — {resource} · {pd.to_datetime(st.session_state['mgmt_alloc_date']).date()}"
-            res = send_email_multi(st.session_state["mgmt_alloc_emails"], subj, base_html, personalize=True)
-            if res["sent_ok"]:
-                st.success(f"Email sent to: {', '.join(res['sent_ok'])}")
-            if res["sent_fail"]:
-                st.warning(f"Some emails failed: {res['sent_fail']}")
-
-    # ---------------- Management dashboard below (unchanged)
+    # ---------------- Management dashboard below (unchanged) ----------------
     st.markdown("---")
     st.subheader("Management Dashboard")
     dash_col1, dash_col2 = st.columns([1,1])
@@ -1236,7 +1145,6 @@ with tab_management:
     else:
         st.info("No reroutes logged for the selected month.")
 
-    # Overall leaderboard for the selected month
     st.markdown("### Monthly Leaderboard — Patients Served")
     served_df = served_df_for_month(dashboard_month)
     if not served_df.empty:
@@ -1245,14 +1153,12 @@ with tab_management:
     else:
         st.write("No patients served data for this month yet.")
 
-    # Reroute log (full)
     with st.expander("🔁 Full Reroute Log"):
         if st.session_state["reroute_log"]:
             st.dataframe(pd.DataFrame(st.session_state["reroute_log"]), use_container_width=True)
         else:
             st.write("No reroute events logged yet.")
 
-    # Raw reservations (debug)
     with st.expander("🗂️ Raw Reservations (debug)"):
         if st.session_state["reservations"]:
             rows = []
@@ -1288,4 +1194,3 @@ with tab_management:
                 st.success(f"Management email sent to: {', '.join(res['sent_ok'])}")
             if res["sent_fail"]:
                 st.warning(f"Some management emails failed: {res['sent_fail']}")
-
