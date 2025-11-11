@@ -1,20 +1,26 @@
 # streamlit_app.py
+from __future__ import annotations
+
+import os
+import re
+import math
+import ssl
+import requests
+from pathlib import Path
+from functools import lru_cache
+from difflib import get_close_matches
+from datetime import datetime, date
+from typing import Optional, List, Dict, Any
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-import re
-import math
-import requests
-import smtplib, ssl
 import pydeck as pdk
+
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from functools import lru_cache
-from difflib import get_close_matches
-from datetime import datetime
 from email.message import EmailMessage
-from pathlib import Path
-from typing import Optional, List
+import smtplib
 
 # ===============================
 # App config
@@ -91,7 +97,7 @@ st.markdown("""
 
 /* ---------- APP BACKGROUND & TEXT ---------- */
 html, body, [data-testid="stAppViewContainer"]{
-  background:linear-gradient(135deg,var(--bg) 0%,var(--bg) 40%,var(--bg2) 100%) !important;
+  background:linear-gradient(135deg,var(--bg) 0%,var(--bg2) 40%,var(--bg2) 100%) !important;
   color:var(--text);
 }
 
@@ -144,15 +150,15 @@ html, body, [data-testid="stAppViewContainer"]{
 </style>
 """, unsafe_allow_html=True)
 
-def severity_badge(sev:str)->str:
+def severity_badge(sev: str) -> str:
     color = {"Mild":"green","Moderate":"amber","Severe":"red","Very Severe":"red"}.get(sev,"blue")
     return f'<span class="badge {color}">{sev}</span>'
 
-def resource_badge(res:str)->str:
-    color = "red" if res=="ICU" else "blue"
+def resource_badge(res: str) -> str:
+    color = "red" if res == "ICU" else "blue"
     return f'<span class="badge {color}">{res}</span>'
 
-def sev_percent(sev:str)->int:
+def sev_percent(sev: str) -> int:
     return {"Mild":25,"Moderate":50,"Severe":75,"Very Severe":100}.get(sev,50)
 
 # ===============================
@@ -166,7 +172,8 @@ def ensure_df(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     return None
 
 def autodetect(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-    if not isinstance(df, pd.DataFrame) or df.empty: return None
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return None
     for patt in candidates:
         for c in df.columns:
             if patt.lower() in str(c).lower():
@@ -174,22 +181,38 @@ def autodetect(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     return None
 
 def build_distance_matrix(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy(); df.columns = [str(c).strip() for c in df.columns]
-    if df.shape[1] > 2:
-        df = df.set_index(df.columns[0])
-        for c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
-        return df.combine_first(df.T)
-    raise ValueError("Could not interpret Location matrix format.")
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    # If first column is index label, or matrix provided with first column as row labels
+    if df.shape[1] >= 2:
+        # Heuristic: if the first column is non-numeric and rest numeric, use first col as index
+        first_col = df.columns[0]
+        other_cols = df.columns[1:]
+        try:
+            # try converting other_cols to numeric to detect matrix form
+            tmp = df[other_cols].apply(pd.to_numeric, errors="coerce")
+            # set index to first column if it looks like an index of names
+            df2 = df.set_index(first_col)
+            # ensure symmetric: if columns don't match index, try combine with transpose
+            return df2.combine_first(df2.T)
+        except Exception:
+            pass
+    raise ValueError("Could not interpret Location matrix format. Expecting a matrix where first column is row labels.")
 
-STOPWORDS = {"hospital","medical","college","institute","university","center","centre","clinic","and"}
+STOPWORDS = {"hospital","medical","college","institute","university","center","centre","clinic","and", "the"}
 def norm_key(s: str) -> str:
     s = str(s).lower().strip().replace("&"," and ")
     s = re.sub(r"[^a-z0-9\s]"," ", s)
     tokens = [t for t in s.split() if t and t not in STOPWORDS]
     return "".join(tokens)
 
-def build_name_maps(availability, dist_mat, ui_list):
-    avail_names = sorted(set(availability.index.get_level_values(0).tolist()))
+def build_name_maps(availability: pd.DataFrame, dist_mat: pd.DataFrame, ui_list: List[str]):
+    # availability should be a MultiIndex index with levels [_Hospital, _Date] OR single-level for monthly grouping
+    try:
+        avail_names = sorted(set(availability.index.get_level_values(0).tolist()))
+    except Exception:
+        # fallback: if availability columns
+        avail_names = sorted(set(availability.index.tolist()))
     dm_names = sorted(set(map(str, dist_mat.index.tolist())) | set(map(str, dist_mat.columns.tolist())))
     ui_names = list(ui_list)
 
@@ -199,7 +222,8 @@ def build_name_maps(availability, dist_mat, ui_list):
     dm_to_av = {}
     for d in dm_names:
         kd = norm_key(d)
-        if kd in avail_by_key: dm_to_av[d] = avail_by_key[kd]
+        if kd in avail_by_key:
+            dm_to_av[d] = avail_by_key[kd]
         else:
             m = get_close_matches(kd, list(avail_by_key.keys()), n=1, cutoff=0.6)
             dm_to_av[d] = avail_by_key[m[0]] if m else None
@@ -207,12 +231,14 @@ def build_name_maps(availability, dist_mat, ui_list):
     ui_to_dm, ui_to_av = {}, {}
     for u in ui_names:
         ku = norm_key(u)
-        if ku in dm_by_key: ui_to_dm[u] = dm_by_key[ku]
+        if ku in dm_by_key:
+            ui_to_dm[u] = dm_by_key[ku]
         else:
             m = get_close_matches(ku, list(dm_by_key.keys()), n=1, cutoff=0.6)
             ui_to_dm[u] = dm_by_key[m[0]] if m else None
 
-        if ku in avail_by_key: ui_to_av[u] = avail_by_key[ku]
+        if ku in avail_by_key:
+            ui_to_av[u] = avail_by_key[ku]
         else:
             m2 = get_close_matches(ku, list(avail_by_key.keys()), n=1, cutoff=0.6)
             ui_to_av[u] = avail_by_key[m2[0]] if m2 else None
@@ -335,7 +361,7 @@ def geocode_hospital(ui_name: str):
     cleaned = re.sub(r"hospital|medical|college|&|,"," ", ui_name, flags=re.I).strip()
     return geocode_nominatim(cleaned)
 
-def hospitals_with_vacancy_on_date(date_any, bed_key: str) -> list[dict]:
+def hospitals_with_vacancy_on_date(date_any, bed_key: str) -> List[dict]:
     results = []
     for ui_name in HOSPITALS_UI:
         av_name = UI_TO_AV.get(ui_name) or ui_name
@@ -390,10 +416,10 @@ def build_allocation_email_html(*, patient_age:int, severity:str, resource:str,
                                 tried_hospital_ui:str, assigned_hospital_av:str,
                                 date_any, distance_km:Optional[float],
                                 beds_avail:int, icu_avail:int,
-                                nearest:list[dict] | None = None,
-                                user_location:str | None = None) -> str:
+                                nearest: Optional[List[dict]] = None,
+                                user_location:Optional[str] = None) -> str:
     dt_txt = pd.to_datetime(date_any).date().isoformat()
-    dist_txt = f"{distance_km:.1f} km" if distance_km is not None else "0.0 km"
+    dist_txt = f"{distance_km:.1f} km" if (distance_km is not None) else "0.0 km"
     nearest_rows = ""
     if nearest is not None:
         if nearest:
@@ -401,10 +427,10 @@ def build_allocation_email_html(*, patient_age:int, severity:str, resource:str,
                 nearest_rows += f"""
                   <tr>
                     <td style="padding:8px 10px;border:1px solid #e2e8f0">{i}</td>
-                    <td style="padding:8px 10px;border:1px solid #e2e8f0">{n['ui_name']}</td>
-                    <td style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">{n['remaining']}</td>
-                    <td style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">{n['distance_km']:.1f} km</td>
-                    <td style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">{(int(round(n['duration_min'])) if n.get('duration_min') is not None else '—')}</td>
+                    <td style="padding:8px 10px;border:1px solid #e2e8f0">{n.get('ui_name','')}</td>
+                    <td style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">{n.get('remaining','—')}</td>
+                    <td style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">{n.get('distance_km',0):.1f} km</td>
+                    <td style="padding:8px 10px;border:1px solid #e2e8f0; text-align:right">{(int(round(n.get('duration_min'))) if n.get('duration_min') is not None else '—')}</td>
                   </tr>
                 """
         else:
@@ -443,7 +469,7 @@ def build_allocation_email_html(*, patient_age:int, severity:str, resource:str,
     """
 
 def send_email_multi(recipients, subject, html_body):
-    """Send HTML email to multiple recipients using st.secrets['smtp']."""
+    """Send HTML email to multiple recipients using st.secrets['smtp'].""" 
     try:
         if "smtp" not in st.secrets:
             raise RuntimeError("SMTP secrets not configured in Streamlit (Settings → Secrets).")
@@ -516,7 +542,8 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
                                         interp_method: str) -> pd.DataFrame:
     df = df_pred_raw.copy()
     hospital_col = autodetect(df, ["hospital","hospital name"])
-    if not hospital_col: raise ValueError("Couldn't detect hospital column in predictions.")
+    if not hospital_col:
+        raise ValueError("Couldn't detect hospital column in predictions.")
     df["_Hospital"] = df[hospital_col].astype(str).str.strip()
 
     date_col  = autodetect(df, ["date"])
@@ -527,15 +554,19 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
     if date_col:
         df["_Date"] = pd.to_datetime(df[date_col], errors="coerce")
     elif year_col and month_col:
-        if day_col: df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
-        else: df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" +
-                                           df[month_col].astype(int).astype[str] + "-01", errors="coerce")
+        if day_col:
+            df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
+        else:
+            # build first of month
+            df["_Date"] = pd.to_datetime(df[year_col].astype(str) + "-" + df[month_col].astype(str).str.zfill(2) + "-01", errors="coerce")
     else:
         raise ValueError("Provide either a Date column or (Year & Month) in predictions.")
-    df = df.dropna(subset=["_Date"]); df["_Date"] = df["_Date"].dt.normalize()
 
-    pred_normal_avail_col = autodetect(df, ["predicted normal beds available","normal beds available (pred)","beds available predicted","pred beds"])
-    pred_icu_avail_col    = autodetect(df, ["predicted icu beds available","icu beds available (pred)","icu available predicted","pred icu"])
+    df = df.dropna(subset=["_Date"])
+    df["_Date"] = pd.to_datetime(df["_Date"]).dt.normalize()
+
+    pred_normal_avail_col = autodetect(df, ["predicted normal beds available","normal beds available (pred)","beds available predicted","pred beds","_BedsAvail"])
+    pred_icu_avail_col    = autodetect(df, ["predicted icu beds available","icu beds available (pred)","icu available predicted","pred icu","_ICUAvail"])
     beds_total_col  = autodetect(df, ["beds total","total beds"])
     icu_total_col   = autodetect(df, ["icu beds total","total icu"])
     beds_occ_col    = autodetect(df, ["beds occupied","occupied beds"])
@@ -548,8 +579,15 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
         df["_BedsAvail"] = pd.to_numeric(df[beds_total_col], errors="coerce") - pd.to_numeric(df[beds_occ_col], errors="coerce")
         df["_ICUAvail"]  = pd.to_numeric(df[icu_total_col],  errors="coerce") - pd.to_numeric(df[icu_occ_col],  errors="coerce")
     else:
-        raise ValueError("Could not find predicted availability columns or totals/occupied fallback.")
-    df["_BedsAvail"] = df["_BedsAvail"].fillna(0); df["_ICUAvail"] = df["_ICUAvail"].fillna(0)
+        # Try some fallback heuristics
+        possible_beds = autodetect(df, ["beds","available","available_beds"])
+        if possible_beds:
+            df["_BedsAvail"] = pd.to_numeric(df[possible_beds], errors="coerce")
+            df["_ICUAvail"] = 0
+        else:
+            raise ValueError("Could not find predicted availability columns or totals/occupied fallback.")
+    df["_BedsAvail"] = df["_BedsAvail"].fillna(0)
+    df["_ICUAvail"] = df["_ICUAvail"].fillna(0)
 
     if granularity == "Monthly":
         df["_Month"] = df["_Date"].dt.to_period("M").dt.to_timestamp()
@@ -558,18 +596,24 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
         availability.index = availability.index.set_names(["_Hospital","_Date"])
         return availability
 
-    # Expand to Daily, then weekly if needed
+    # Expand to Daily (and weekly if needed)
     df_ts = df.set_index("_Date")
-    beds_piv = df_ts.pivot_table(index="_Date", columns="_Hospital", values="_BedsAvail", aggfunc="mean")
-    icu_piv  = df_ts.pivot_table(index="_Date", columns="_Hospital", values="_ICUAvail",  aggfunc="mean")
+    beds_piv = df_ts.pivot_table(index=df_ts.index, columns="_Hospital", values="_BedsAvail", aggfunc="mean")
+    icu_piv  = df_ts.pivot_table(index=df_ts.index, columns="_Hospital", values="_ICUAvail",  aggfunc="mean")
+
+    if beds_piv.empty and icu_piv.empty:
+        raise ValueError("No time series data to build availability from predictions.")
+
     full_idx = pd.date_range(start=beds_piv.index.min(), end=beds_piv.index.max(), freq="D")
-    beds_piv = beds_piv.reindex(full_idx); icu_piv = icu_piv.reindex(full_idx)
+    beds_piv = beds_piv.reindex(full_idx)
+    icu_piv = icu_piv.reindex(full_idx)
 
     if interp_method == "linear":
         beds_piv = beds_piv.interpolate(method="time", limit_direction="both")
         icu_piv  = icu_piv.interpolate(method="time", limit_direction="both")
     else:
-        beds_piv = beds_piv.ffill().bfill(); icu_piv = icu_piv.ffill().bfill()
+        beds_piv = beds_piv.ffill().bfill()
+        icu_piv  = icu_piv.ffill().bfill()
 
     if granularity == "Weekly":
         beds_piv = beds_piv.resample("W-MON").mean()
@@ -580,7 +624,7 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
     long_df = beds_long.join(icu_long, how="outer").reset_index()
     long_df.columns = ["_Date","_Hospital","_BedsAvail","_ICUAvail"]
     long_df["_BedsAvail"] = long_df["_BedsAvail"].fillna(0).clip(lower=0)
-    long_df["_ICUAvail"]  = long_df["_ICUAvail"].fillna(0).clip(lower=0)
+    long_df["_ICUAvail"] = long_df["_ICUAvail"].fillna(0).clip(lower=0)
     availability = (long_df.groupby(["_Hospital","_Date"], as_index=False)[["_BedsAvail","_ICUAvail"]]
                     .mean().set_index(["_Hospital","_Date"]).sort_index())
     return availability
@@ -594,7 +638,12 @@ except Exception as e:
 # ===============================
 # Distance matrix + name maps
 # ===============================
-dist_mat = build_distance_matrix(df_loc)
+try:
+    dist_mat = build_distance_matrix(df_loc)
+except Exception as e:
+    st.error(f"Could not build distance matrix from 'Location matrix.xlsx': {e}")
+    st.stop()
+
 DM_TO_AV, UI_TO_DM, UI_TO_AV = build_name_maps(availability, dist_mat, HOSPITALS_UI)
 
 # ===============================
@@ -607,19 +656,27 @@ if "served" not in st.session_state:
 if "reroute_log" not in st.session_state:
     st.session_state["reroute_log"] = []
 
-def get_remaining(hospital: str, date, bed_type: str) -> int:
+def get_remaining(hospital: str, date_any, bed_type: str) -> int:
     base = 0.0
-    key = (hospital, pd.to_datetime(date).normalize())
-    if key in availability.index:
-        base = float(availability.loc[key, "_ICUAvail" if bed_type == "ICU" else "_BedsAvail"])
+    key = (hospital, pd.to_datetime(date_any).normalize())
+    try:
+        if key in availability.index:
+            base = float(availability.loc[key, "_ICUAvail" if bed_type == "ICU" else "_BedsAvail"])
+    except Exception:
+        # availability may be DataFrame without MultiIndex for some edge case
+        try:
+            row = availability.loc[hospital]
+            base = float(row.get("_ICUAvail" if bed_type == "ICU" else "_BedsAvail", 0))
+        except Exception:
+            base = 0.0
     reserved = st.session_state["reservations"].get((hospital, key[1], bed_type), 0)
     return max(0, int(np.floor(base)) - int(reserved))
 
-def reserve_bed(hospital: str, date, bed_type: str, n: int = 1):
-    k = (hospital, pd.to_datetime(date).normalize(), bed_type)
+def reserve_bed(hospital: str, date_any, bed_type: str, n: int = 1):
+    k = (hospital, pd.to_datetime(date_any).normalize(), bed_type)
     st.session_state["reservations"][k] = st.session_state["reservations"].get(k, 0) + n
 
-def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
+def find_reroute_nearest_first(start_ui_name: str, date_any, bed_key: str):
     start_dm = UI_TO_DM.get(start_ui_name)
     checks = []
     if not start_dm or start_dm not in dist_mat.index:
@@ -629,8 +686,8 @@ def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
         if neighbor_dm == start_dm: continue
         neighbor_av = DM_TO_AV.get(neighbor_dm)
         rem = None
-        if neighbor_av and ((neighbor_av, pd.to_datetime(date).normalize()) in availability.index):
-            rem = get_remaining(neighbor_av, date, bed_key)
+        if neighbor_av and ((neighbor_av, pd.to_datetime(date_any).normalize()) in availability.index):
+            rem = get_remaining(neighbor_av, date_any, bed_key)
         checks.append({"Neighbor Hospital": neighbor_dm, "Remaining Beds/ICU": rem, "Distance (km)": float(dist)})
         if rem and rem > 0:
             return neighbor_av, float(dist), None, checks
@@ -639,16 +696,16 @@ def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
 def month_str_from_date(dt) -> str:
     return pd.to_datetime(dt).strftime("%Y-%m")
 
-def increment_served(hospital_av_name: str, date) -> None:
+def increment_served(hospital_av_name: str, date_any) -> None:
     if not hospital_av_name: return
-    m = month_str_from_date(date)
+    m = month_str_from_date(date_any)
     key = (hospital_av_name, m)
     st.session_state["served"][key] = st.session_state["served"].get(key, 0) + 1
 
-def log_reroute(original_ui: str, assigned_av: str, date) -> None:
-    m = month_str_from_date(date)
+def log_reroute(original_ui: str, assigned_av: str, date_any) -> None:
+    m = month_str_from_date(date_any)
     st.session_state["reroute_log"].append({
-        "date": pd.to_datetime(date).date().isoformat(),
+        "date": pd.to_datetime(date_any).date().isoformat(),
         "original_ui": original_ui,
         "assigned_av": assigned_av,
         "month": m
@@ -657,13 +714,25 @@ def log_reroute(original_ui: str, assigned_av: str, date) -> None:
 def get_month_served(hospital_av_name: str, month_str: str) -> int:
     return st.session_state["served"].get((hospital_av_name, month_str), 0)
 
-def get_avail_counts(hospital_av_name: str, date) -> dict:
-    key = (hospital_av_name, pd.to_datetime(date).normalize())
+def get_avail_counts(hospital_av_name: str, date_any) -> dict:
+    key = (hospital_av_name, pd.to_datetime(date_any).normalize())
     out = {"beds_available": None, "icu_available": None}
-    if key in availability.index:
-        row = availability.loc[key]
-        out["beds_available"] = int(np.floor(float(row["_BedsAvail"]))) if not pd.isna(row["_BedsAvail"]) else 0
-        out["icu_available"]  = int(np.floor(float(row["_ICUAvail"])))  if not pd.isna(row["_ICUAvail"])  else 0
+    try:
+        if key in availability.index:
+            row = availability.loc[key]
+            out["beds_available"] = int(np.floor(float(row["_BedsAvail"]))) if not pd.isna(row["_BedsAvail"]) else 0
+            out["icu_available"]  = int(np.floor(float(row["_ICUAvail"])))  if not pd.isna(row["_ICUAvail"])  else 0
+            return out
+    except Exception:
+        pass
+    # fallback: try single-index lookup
+    try:
+        row = availability.loc[hospital_av_name]
+        out["beds_available"] = int(np.floor(float(row.get("_BedsAvail", 0)))) if pd.notna(row.get("_BedsAvail", 0)) else 0
+        out["icu_available"]  = int(np.floor(float(row.get("_ICUAvail", 0))))  if pd.notna(row.get("_ICUAvail", 0)) else 0
+    except Exception:
+        out["beds_available"] = 0
+        out["icu_available"] = 0
     return out
 
 def served_df_for_month(month_str: str) -> pd.DataFrame:
@@ -678,15 +747,17 @@ def served_df_for_month(month_str: str) -> pd.DataFrame:
 # ===============================
 # UI – Patient inputs
 # ===============================
-all_dates = sorted(list(set([d for _, d in availability.index])))
-min_d, max_d = min(all_dates), max(all_dates)
+# Prepare date bounds
+all_dates = sorted(list({d for (_, d) in availability.index}))
+min_d = min(all_dates) if all_dates else pd.to_datetime("today").normalize()
+max_d = max(all_dates) if all_dates else pd.to_datetime("today").normalize()
 
 with st.form("allocation_form"):
     st.subheader("Patient Intake")
     c1,c2,c3,c4 = st.columns([1.2,1,1,1])
     with c1:
         hospital_ui = st.selectbox("Hospital Name", HOSPITALS_UI)
-        date_input  = st.date_input("Date", value=max_d, min_value=min_d, max_value=max_d)
+        date_input  = st.date_input("Date", value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d, min_value=min_d.date() if isinstance(min_d, pd.Timestamp) else min_d, max_value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d)
         weight = st.number_input("Weight (kg)", min_value=1.0, max_value=250.0, value=60.0)
     with c2:
         age = st.number_input("Age (years)", min_value=0, max_value=120, value=25)
@@ -714,7 +785,7 @@ with st.form("allocation_form"):
 assigned_av = None
 rerouted_distance = None
 note = ""
-debug_checks = []
+debug_checks: List[Dict[str, Any]] = []
 
 if submit:
     _, s_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
@@ -840,7 +911,7 @@ if submit:
                                     get_fill_color=[255,255,255,220], pickable=False))
         hosp_rows = []
         for n in nearest_list:
-            if n["lat"] and n["lng"]:
+            if n.get("lat") and n.get("lng"):
                 hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
         if hosp_rows:
             hosp_df = pd.DataFrame(hosp_rows)
@@ -859,7 +930,7 @@ if submit:
     if assigned_av:
         assigned_counts = get_avail_counts(assigned_av, date_input)
         beds_pred = assigned_counts["beds_available"] if assigned_counts["beds_available"] is not None else 0
-        icu_pred  = assigned_counts["icu_available"]  if assigned_counts["icu_available"]  is not None else 0
+        icu_pred  = assigned_counts["icu_available"]  if assigned_counts["icu_available"] is not None else 0
 
     if email_opt_in and email_addresses.strip():
         html = build_allocation_email_html(
@@ -898,7 +969,7 @@ dash_col1, dash_col2 = st.columns([1,1])
 with dash_col1:
     dashboard_ui_hospital = st.selectbox("Choose hospital to view dashboard", HOSPITALS_UI, index=0)
 with dash_col2:
-    dashboard_date = st.date_input("View month (pick any date in month)", value=max_d, min_value=min_d, max_value=max_d)
+    dashboard_date = st.date_input("View month (pick any date in month)", value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d, min_value=min_d.date() if isinstance(min_d, pd.Timestamp) else min_d, max_value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d)
 
 dashboard_start_av = UI_TO_AV.get(dashboard_ui_hospital) or dashboard_ui_hospital
 dashboard_month = month_str_from_date(dashboard_date)
@@ -987,8 +1058,8 @@ with st.expander("🔁 Full Reroute Log"):
 with st.expander("🗂️ Raw Reservations (debug)"):
     if st.session_state["reservations"]:
         rows = []
-        for (h, date, bed_type), cnt in st.session_state["reservations"].items():
-            rows.append({"Hospital":h, "Date": date, "Bed Type": bed_type, "Reserved": cnt})
+        for (h, dt, bed_type), cnt in st.session_state["reservations"].items():
+            rows.append({"Hospital":h, "Date": dt, "Bed Type": bed_type, "Reserved": cnt})
         st.dataframe(pd.DataFrame(rows).sort_values(["Date","Hospital"]), use_container_width=True)
     else:
         st.write("No reservations yet.")
