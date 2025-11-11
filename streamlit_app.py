@@ -412,51 +412,36 @@ def parse_name_from_email(email: str) -> str:
       md.ariful.khan@example.com -> Md. Ariful Khan
       ariful123@example.com -> Ariful
       ariful_rahman@example.com -> Ariful Rahman
-    Heuristics applied:
-      - split on . _ - + 
-      - remove numeric fragments
-      - treat 'md' or 'md.' as 'Md.' prefix
     """
     if not isinstance(email, str) or "@" not in email:
         return ""
     local = email.split("@", 1)[0]
-    # drop common tags like mailto, contact, info
     local = re.sub(r"^(info|contact|mail|admin|support)[\d\._-]*", "", local, flags=re.I)
-    # split on separators
     parts = re.split(r"[._\-\+]", local)
-    # remove empty and numeric-only tokens
     parts = [re.sub(r"\d+", "", p).strip() for p in parts if p and not re.fullmatch(r"\d+", p)]
     if not parts:
-        # fallback: remove digits from whole local and split by camel (rare)
         cleaned = re.sub(r"\d+", "", local)
         parts = re.findall(r"[A-Za-z][a-z]*", cleaned) or [cleaned]
-    # Capitalize parts and treat md prefix specially
     out_parts = []
     for i, p in enumerate(parts):
         if not p: continue
         pl = p.lower()
-        if pl in ("md", "md", "mohd", "mohammad", "mohammed", "mr"):
-            # common abbreviations -> keep as 'Md.' (Bangladeshi naming often uses 'Md', 'Md.' prefix)
+        if pl in ("md", "mohd", "mohammad", "mohammed", "mr"):
             if i == 0:
                 out_parts.append("Md.")
             else:
                 out_parts.append(pl.capitalize())
         else:
             out_parts.append(pl.capitalize())
-    # If the result is single token and it's long (like 'arifulrahman'), try to split camel or by heuristics:
     if len(out_parts) == 1:
         token = out_parts[0]
-        # attempt camel split (e.g., ArifulRahman)
         split_camel = re.findall(r'[A-Z][a-z]*', token)
         if len(split_camel) > 1:
             out_parts = split_camel
-    # return first two tokens max (avoid overly long names)
     return " ".join(out_parts[:3]).strip()
 
 def personalize_html_for_email(base_html: str, name: str) -> str:
     greeting = f"<p style='margin:0 0 10px'>Hello {name},</p>"
-    # Insert greeting before main content (after any initial <div> if present)
-    # Simple approach: prepend greeting right before base_html
     return greeting + base_html
 
 def build_allocation_email_html(*, patient_age:int, severity:str, resource:str,
@@ -799,7 +784,6 @@ def served_df_for_month(month_str: str) -> pd.DataFrame:
 # ===============================
 # Prepare date bounds
 # ===============================
-# availability.index should be MultiIndex: (_Hospital, _Date)
 all_dates = sorted(list({d for (_, d) in availability.index}))
 min_d = min(all_dates) if all_dates else pd.to_datetime("today").normalize()
 max_d = max(all_dates) if all_dates else pd.to_datetime("today").normalize()
@@ -809,67 +793,63 @@ max_d = max(all_dates) if all_dates else pd.to_datetime("today").normalize()
 # ===============================
 tab_individual, tab_management = st.tabs(["Individual View", "Management View"])
 
+# ---------- Individual View (unchanged) ----------
 with tab_individual:
     st.header("🧑‍⚕️ Individual Allocation")
-    with st.form("allocation_form"):
+    with st.form("allocation_form_individual"):
         c1,c2,c3,c4 = st.columns([1.2,1,1,1])
         with c1:
-            hospital_ui = st.selectbox("Hospital Name", HOSPITALS_UI)
-            date_input  = st.date_input("Date", value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d, min_value=min_d.date() if isinstance(min_d, pd.Timestamp) else min_d, max_value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d)
-            weight = st.number_input("Weight (kg)", min_value=1.0, max_value=250.0, value=60.0)
+            hospital_ui = st.selectbox("Hospital Name", HOSPITALS_UI, key="ind_hospital")
+            date_input  = st.date_input("Date", value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d, min_value=min_d.date() if isinstance(min_d, pd.Timestamp) else min_d, max_value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d, key="ind_date")
+            weight = st.number_input("Weight (kg)", min_value=1.0, max_value=250.0, value=60.0, key="ind_weight")
         with c2:
-            age = st.number_input("Age (years)", min_value=0, max_value=120, value=25)
-            platelet = st.number_input("Platelet Count (/µL)", min_value=0, value=120000, step=1000)
+            age = st.number_input("Age (years)", min_value=0, max_value=120, value=25, key="ind_age")
+            platelet = st.number_input("Platelet Count (/µL)", min_value=0, value=120000, step=1000, key="ind_platelet")
         with c3:
-            ns1_val = st.selectbox("NS1", [0,1], index=0, help="0=Negative, 1=Positive")
-            igm_val = st.selectbox("IgM", [0,1], index=0, help="0=Negative, 1=Positive")
+            ns1_val = st.selectbox("NS1", [0,1], index=0, help="0=Negative, 1=Positive", key="ind_ns1")
+            igm_val = st.selectbox("IgM", [0,1], index=0, help="0=Negative, 1=Positive", key="ind_igm")
         with c4:
-            igg_val = st.selectbox("IgG", [0,1], index=0, help="0=Negative, 1=Positive")
+            igg_val = st.selectbox("IgG", [0,1], index=0, help="0=Negative, 1=Positive", key="ind_igg")
             st.caption(f"Time: **{granularity}** · Interp: **{interp_method if granularity!='Monthly' else 'N/A'}**")
 
-        pick_area = st.selectbox("Pick a Dhaka area (optional)", ["—"] + DHAKA_AREAS, index=0)
-        user_location_query = st.text_input("Or type your exact location", placeholder="e.g., House 10, Road 5, Dhanmondi")
-        use_driving_eta = st.checkbox("Use driving ETA (beta via OSRM demo)", value=False)
+        pick_area = st.selectbox("Pick a Dhaka area (optional)", ["—"] + DHAKA_AREAS, index=0, key="ind_area")
+        user_location_query = st.text_input("Or type your exact location", placeholder="e.g., House 10, Road 5, Dhanmondi", key="ind_userloc")
+        use_driving_eta = st.checkbox("Use driving ETA (beta via OSRM demo)", value=False, key="ind_osrm")
 
         email_addresses = st.text_input("📧 Recipient Email(s)",
-            placeholder="e.g., patient@gmail.com; doctor@hospital.org; admin@health.gov.bd")
-        email_opt_in = st.checkbox("Send dengue allocation report via email (personalized)", value=False)
+            placeholder="e.g., patient@gmail.com; doctor@hospital.org; admin@health.gov.bd", key="ind_emails")
+        email_opt_in = st.checkbox("Send dengue allocation report via email (personalized)", value=False, key="ind_email_opt")
 
-        submit = st.form_submit_button("🚑 Allocate")
+        submit = st.form_submit_button("🚑 Allocate (Individual)")
 
-    # Allocation logic (runs on submit)
-    assigned_av = None
-    rerouted_distance = None
-    note = ""
-    debug_checks: List[Dict[str, Any]] = []
-
+    # Allocation logic for individual
     if submit:
-        _, s_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
+        # reuse same logic as management allocation below (see function form)
+        _, s_score = compute_severity_score(st.session_state["ind_age"], st.session_state["ind_ns1"], st.session_state["ind_igm"], st.session_state["ind_igg"], st.session_state["ind_platelet"])
         severity = verdict_from_score(s_score)
         resource = required_resource(severity)
         bed_key  = "ICU" if resource == "ICU" else "Normal"
 
-        start_av = UI_TO_AV.get(hospital_ui) or hospital_ui
-        remaining_here = get_remaining(start_av, date_input, bed_key)
+        start_av = UI_TO_AV.get(st.session_state["ind_hospital"]) or st.session_state["ind_hospital"]
+        remaining_here = get_remaining(start_av, st.session_state["ind_date"], bed_key)
 
-        if remaining_here > 0 and ((start_av, pd.to_datetime(date_input).normalize()) in availability.index):
+        if remaining_here > 0 and ((start_av, pd.to_datetime(st.session_state["ind_date"]).normalize()) in availability.index):
             assigned_av, rerouted_distance, note = start_av, None, "Assigned at selected hospital"
             available_status = "Yes"
         else:
             available_status = "No vacancy available here"
-            assigned_av, rerouted_distance, err, debug_checks = find_reroute_nearest_first(hospital_ui, date_input, bed_key)
+            assigned_av, rerouted_distance, err, debug_checks = find_reroute_nearest_first(st.session_state["ind_hospital"], st.session_state["ind_date"], bed_key)
             note = f"Rerouted to {assigned_av}" if assigned_av else err
 
         if assigned_av:
-            reserve_bed(assigned_av, date_input, bed_key, 1)
-            increment_served(assigned_av, date_input)
-            if assigned_av != (start_av or hospital_ui):
-                log_reroute(hospital_ui, assigned_av, date_input)
+            reserve_bed(assigned_av, st.session_state["ind_date"], bed_key, 1)
+            increment_served(assigned_av, st.session_state["ind_date"])
+            if assigned_av != (start_av or st.session_state["ind_hospital"]):
+                log_reroute(st.session_state["ind_hospital"], assigned_av, st.session_state["ind_date"])
 
-        # ---------- Allocation Ticket UI ----------
-        st.subheader("Allocation Result")
+        # UI result (same as before)...
+        st.subheader("Allocation Result (Individual)")
         st.markdown('<div class="grid grid-4">', unsafe_allow_html=True)
-
         st.markdown(f'''
           <div class="card">
             <div class="kpi">{s_score}</div>
@@ -877,7 +857,6 @@ with tab_individual:
             <div class="ribbon">{severity_badge(severity)}</div>
           </div>
         ''', unsafe_allow_html=True)
-
         st.markdown(f'''
           <div class="card">
             <div class="kpi">{resource}</div>
@@ -885,15 +864,13 @@ with tab_individual:
             <div class="ribbon">{resource_badge(resource)}</div>
           </div>
         ''', unsafe_allow_html=True)
-
         st.markdown(f'''
           <div class="card">
-            <div class="kpi">{pd.to_datetime(date_input).date()}</div>
+            <div class="kpi">{pd.to_datetime(st.session_state["ind_date"]).date()}</div>
             <div class="kpi-label">Date</div>
             <div class="ribbon"><span class="badge blue">{granularity}</span></div>
           </div>
         ''', unsafe_allow_html=True)
-
         dist_txt = f"{float(rerouted_distance):.1f} km" if rerouted_distance is not None else "—"
         st.markdown(f'''
           <div class="card">
@@ -912,7 +889,7 @@ with tab_individual:
             else:
                 st.markdown('<div class="banner warn">⚠️ No vacancy available here — finding nearest option…</div>', unsafe_allow_html=True)
             st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
-            tried = hospital_ui
+            tried = st.session_state["ind_hospital"]
             st.markdown(f"**Hospital Tried:** {tried}", unsafe_allow_html=True)
             st.markdown('<div class="route" style="margin-top:8px">', unsafe_allow_html=True)
             st.markdown(f'<span class="pill">{tried}</span>', unsafe_allow_html=True)
@@ -932,18 +909,17 @@ with tab_individual:
             st.json(summary)
             st.markdown('</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-
         st.progress(sev_percent(severity))
 
-        # ---------- Nearest by user location ----------
-        chosen_loc = user_location_query.strip() if user_location_query.strip() else (pick_area if pick_area != "—" else "")
+        # Nearest by user location display
+        chosen_loc = st.session_state["ind_userloc"].strip() if st.session_state["ind_userloc"].strip() else (st.session_state["ind_area"] if st.session_state["ind_area"] != "—" else "")
         nearest_list = []
         user_ll = None
         if chosen_loc:
             try:
                 bed_key_needed = "ICU" if resource == "ICU" else "Normal"
                 nearest_list, user_ll = nearest_available_by_user_location_no_key(
-                    chosen_loc, date_input, bed_key_needed, top_k=3, prefer_driving_eta=use_driving_eta
+                    chosen_loc, st.session_state["ind_date"], bed_key_needed, top_k=3, prefer_driving_eta=st.session_state["ind_osrm"]
                 )
             except Exception as e:
                 st.warning(f"Could not fetch nearest hospitals: {e}")
@@ -958,7 +934,6 @@ with tab_individual:
             } for n in nearest_list])
             st.dataframe(df_near, use_container_width=True)
 
-            # Map: white user pin + red hospital pins
             layers = []
             if user_ll:
                 user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
@@ -981,49 +956,218 @@ with tab_individual:
         else:
             st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
 
-        # ---------- Email ----------
+        # Email for individual
         beds_pred = icu_pred = 0
         if assigned_av:
-            assigned_counts = get_avail_counts(assigned_av, date_input)
+            assigned_counts = get_avail_counts(assigned_av, st.session_state["ind_date"])
             beds_pred = assigned_counts["beds_available"] if assigned_counts["beds_available"] is not None else 0
             icu_pred  = assigned_counts["icu_available"]  if assigned_counts["icu_available"] is not None else 0
 
-        if email_opt_in and email_addresses.strip():
+        if st.session_state["ind_email_opt"] and st.session_state["ind_emails"].strip():
             base_html = build_allocation_email_html(
-                patient_age=age, severity=severity, resource=resource,
-                tried_hospital_ui=hospital_ui, assigned_hospital_av=(assigned_av or "—"),
-                date_any=date_input, distance_km=(float(rerouted_distance) if rerouted_distance is not None else 0.0),
+                patient_age=st.session_state["ind_age"], severity=severity, resource=resource,
+                tried_hospital_ui=st.session_state["ind_hospital"], assigned_hospital_av=(assigned_av or "—"),
+                date_any=st.session_state["ind_date"], distance_km=(float(rerouted_distance) if rerouted_distance is not None else 0.0),
                 beds_avail=beds_pred, icu_avail=icu_pred,
                 nearest=(nearest_list if chosen_loc else None),
-                user_location=(f"{chosen_loc} — {'driving (OSRM)' if use_driving_eta else 'straight-line'}" if chosen_loc else None),
+                user_location=(f"{chosen_loc} — {'driving (OSRM)' if st.session_state['ind_osrm'] else 'straight-line'}" if chosen_loc else None),
             )
-            subj = f"[Dengue Allocation] {severity} — {resource} · {pd.to_datetime(date_input).date()}"
-            # send personalized emails (per recipient)
-            res = send_email_multi(email_addresses, subj, base_html, personalize=True)
+            subj = f"[Dengue Allocation] {severity} — {resource} · {pd.to_datetime(st.session_state['ind_date']).date()}"
+            res = send_email_multi(st.session_state["ind_emails"], subj, base_html, personalize=True)
             if res["sent_ok"]:
                 st.success(f"Email sent to: {', '.join(res['sent_ok'])}")
             if res["sent_fail"]:
                 st.warning(f"Some emails failed: {res['sent_fail']}")
 
-        # Debug drawer
-        with st.expander("🧪 Debug: Nearest Hospitals Checked"):
-            if debug_checks:
-                dbg = pd.DataFrame(debug_checks)
-                if assigned_av:
-                    dbg["Allocated"] = dbg["Neighbor Hospital"].eq(assigned_av)
-                    dbg = dbg.sort_values(["Allocated","Remaining Beds/ICU"], ascending=[False,False])
-                st.dataframe(dbg, use_container_width=True)
-            else:
-                st.write("No neighbor checks — assigned at selected hospital.")
-
+# ---------- Management View (now includes allocation form) ----------
 with tab_management:
-    st.header("📊 Management View")
+    st.header("📊 Management View — Dashboard & Allocation")
+    st.markdown("Use the management allocation form to create allocations directly from this view (commits reservation & updates dashboards).")
+    # Management allocation form (same fields, different keys)
+    with st.form("allocation_form_management"):
+        st.subheader("🛠️ Management Allocation (Admin)")
+        m1,m2,m3,m4 = st.columns([1.2,1,1,1])
+        with m1:
+            mgmt_hospital_ui = st.selectbox("Hospital Name", HOSPITALS_UI, key="mgmt_alloc_hospital")
+            mgmt_date_input  = st.date_input("Date", value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d, min_value=min_d.date() if isinstance(min_d, pd.Timestamp) else min_d, max_value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d, key="mgmt_alloc_date")
+            mgmt_weight = st.number_input("Weight (kg)", min_value=1.0, max_value=250.0, value=60.0, key="mgmt_alloc_weight")
+        with m2:
+            mgmt_age = st.number_input("Age (years)", min_value=0, max_value=120, value=30, key="mgmt_alloc_age")
+            mgmt_platelet = st.number_input("Platelet Count (/µL)", min_value=0, value=100000, step=1000, key="mgmt_alloc_platelet")
+        with m3:
+            mgmt_ns1 = st.selectbox("NS1", [0,1], index=0, key="mgmt_alloc_ns1")
+            mgmt_igm = st.selectbox("IgM", [0,1], index=0, key="mgmt_alloc_igm")
+        with m4:
+            mgmt_igg = st.selectbox("IgG", [0,1], index=0, key="mgmt_alloc_igg")
+            st.caption(f"Time: **{granularity}** · Interp: **{interp_method if granularity!='Monthly' else 'N/A'}**")
+        mgmt_pick_area = st.selectbox("Pick a Dhaka area (optional)", ["—"] + DHAKA_AREAS, index=0, key="mgmt_alloc_area")
+        mgmt_user_location_query = st.text_input("Or type exact location", placeholder="e.g., House 10, Road 5, Dhanmondi", key="mgmt_alloc_userloc")
+        mgmt_use_driving_eta = st.checkbox("Use driving ETA (beta)", value=False, key="mgmt_alloc_osrm")
+
+        mgmt_email_addresses = st.text_input("📧 Recipient Email(s) for allocation (optional)", placeholder="patient@example.com; doctor@hospital.org", key="mgmt_alloc_emails")
+        mgmt_email_opt_in = st.checkbox("Send email for this allocation (personalized)", value=False, key="mgmt_alloc_email_opt")
+
+        mgmt_submit = st.form_submit_button("🚑 Allocate (Management)")
+
+    # When management allocation submitted
+    if mgmt_submit:
+        _, s_score = compute_severity_score(st.session_state["mgmt_alloc_age"], st.session_state["mgmt_alloc_ns1"], st.session_state["mgmt_alloc_igm"], st.session_state["mgmt_alloc_igg"], st.session_state["mgmt_alloc_platelet"])
+        severity = verdict_from_score(s_score)
+        resource = required_resource(severity)
+        bed_key  = "ICU" if resource == "ICU" else "Normal"
+
+        start_av = UI_TO_AV.get(st.session_state["mgmt_alloc_hospital"]) or st.session_state["mgmt_alloc_hospital"]
+        remaining_here = get_remaining(start_av, st.session_state["mgmt_alloc_date"], bed_key)
+
+        if remaining_here > 0 and ((start_av, pd.to_datetime(st.session_state["mgmt_alloc_date"]).normalize()) in availability.index):
+            assigned_av, rerouted_distance, note = start_av, None, "Assigned at selected hospital"
+            available_status = "Yes"
+        else:
+            available_status = "No vacancy available here"
+            assigned_av, rerouted_distance, err, debug_checks = find_reroute_nearest_first(st.session_state["mgmt_alloc_hospital"], st.session_state["mgmt_alloc_date"], bed_key)
+            note = f"Rerouted to {assigned_av}" if assigned_av else err
+
+        if assigned_av:
+            reserve_bed(assigned_av, st.session_state["mgmt_alloc_date"], bed_key, 1)
+            increment_served(assigned_av, st.session_state["mgmt_alloc_date"])
+            if assigned_av != (start_av or st.session_state["mgmt_alloc_hospital"]):
+                log_reroute(st.session_state["mgmt_alloc_hospital"], assigned_av, st.session_state["mgmt_alloc_date"])
+
+        # Management allocation result UI
+        st.subheader("Allocation Result (Management)")
+        st.markdown('<div class="grid grid-4">', unsafe_allow_html=True)
+        st.markdown(f'''
+          <div class="card">
+            <div class="kpi">{s_score}</div>
+            <div class="kpi-label">Severity Score</div>
+            <div class="ribbon">{severity_badge(severity)}</div>
+          </div>
+        ''', unsafe_allow_html=True)
+        st.markdown(f'''
+          <div class="card">
+            <div class="kpi">{resource}</div>
+            <div class="kpi-label">Resource Needed</div>
+            <div class="ribbon">{resource_badge(resource)}</div>
+          </div>
+        ''', unsafe_allow_html=True)
+        st.markdown(f'''
+          <div class="card">
+            <div class="kpi">{pd.to_datetime(st.session_state["mgmt_alloc_date"]).date()}</div>
+            <div class="kpi-label">Date</div>
+            <div class="ribbon"><span class="badge blue">{granularity}</span></div>
+          </div>
+        ''', unsafe_allow_html=True)
+        dist_txt = f"{float(rerouted_distance):.1f} km" if rerouted_distance is not None else "—"
+        st.markdown(f'''
+          <div class="card">
+            <div class="kpi">{dist_txt}</div>
+            <div class="kpi-label">Travel Distance</div>
+            <div class="ribbon"><span class="badge blue">{interp_method if granularity!='Monthly' else 'N/A'}</span></div>
+          </div>
+        ''', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="card ticket">', unsafe_allow_html=True)
+        left, right = st.columns([1.2,.8], gap="medium")
+        with left:
+            if available_status == "Yes":
+                st.markdown('<div class="banner ok">✅ Bed available at selected hospital</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="banner warn">⚠️ No vacancy available here — finding nearest option…</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
+            tried = st.session_state["mgmt_alloc_hospital"]
+            st.markdown(f"**Hospital Tried:** {tried}", unsafe_allow_html=True)
+            st.markdown('<div class="route" style="margin-top:8px">', unsafe_allow_html=True)
+            st.markdown(f'<span class="pill">{tried}</span>', unsafe_allow_html=True)
+            st.markdown('<div class="arrow">➡️</div>', unsafe_allow_html=True)
+            final_chip = f'<span class="pill">{assigned_av if assigned_av else "—"}</span>'
+            st.markdown(final_chip, unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+            st.caption(f"Note: **{note}**")
+        with right:
+            st.markdown("**Summary**"); st.markdown('<div class="sep"></div>', unsafe_allow_html=True)
+            summary = {
+                "Severity": severity, "Resource": resource, "Severity Score": s_score,
+                "Hospital Tried": tried, "Available at Current Hospital": available_status,
+                "Assigned Hospital": assigned_av, "Distance (km)": float(rerouted_distance) if rerouted_distance is not None else None
+            }
+            st.markdown('<div class="codebox">', unsafe_allow_html=True)
+            st.json(summary)
+            st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.progress(sev_percent(severity))
+
+        # show nearest by admin-provided location
+        chosen_loc = st.session_state["mgmt_alloc_userloc"].strip() if st.session_state["mgmt_alloc_userloc"].strip() else (st.session_state["mgmt_alloc_area"] if st.session_state["mgmt_alloc_area"] != "—" else "")
+        nearest_list = []
+        user_ll = None
+        if chosen_loc:
+            try:
+                bed_key_needed = "ICU" if resource == "ICU" else "Normal"
+                nearest_list, user_ll = nearest_available_by_user_location_no_key(
+                    chosen_loc, st.session_state["mgmt_alloc_date"], bed_key_needed, top_k=5, prefer_driving_eta=st.session_state["mgmt_alloc_osrm"]
+                )
+            except Exception as e:
+                st.warning(f"Could not fetch nearest hospitals: {e}")
+
+        st.markdown("### 🗺️ Nearest hospitals with vacancy (by provided location)")
+        if chosen_loc and nearest_list:
+            df_near = pd.DataFrame([{
+                "Hospital": n["ui_name"],
+                "Vacancy (Beds/ICU)": n["remaining"],
+                "Distance (km)": round(n["distance_km"], 1),
+                "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") is not None else None),
+            } for n in nearest_list])
+            st.dataframe(df_near, use_container_width=True)
+
+            layers = []
+            if user_ll:
+                user_df = pd.DataFrame([{"name":"User","lat":user_ll[0],"lon":user_ll[1]}])
+                layers.append(pdk.Layer("ScatterplotLayer", user_df,
+                                        get_position="[lon, lat]", get_radius=80,
+                                        get_fill_color=[255,255,255,220], pickable=False))
+            hosp_rows = []
+            for n in nearest_list:
+                if n.get("lat") and n.get("lng"):
+                    hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
+            if hosp_rows:
+                hosp_df = pd.DataFrame(hosp_rows)
+                layers.append(pdk.Layer("ScatterplotLayer", hosp_df,
+                                        get_position="[lon, lat]", get_radius=70,
+                                        get_fill_color=[255,0,0,220], pickable=True))
+            if layers:
+                center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
+                view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
+                st.pydeck_chart(pdk.Deck(map_style=None, initial_view_state=view_state, layers=layers), use_container_width=True)
+        else:
+            st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
+
+        # Email option for management allocation
+        if st.session_state["mgmt_alloc_email_opt"] and st.session_state["mgmt_alloc_emails"].strip():
+            base_html = build_allocation_email_html(
+                patient_age=st.session_state["mgmt_alloc_age"], severity=severity, resource=resource,
+                tried_hospital_ui=st.session_state["mgmt_alloc_hospital"], assigned_hospital_av=(assigned_av or "—"),
+                date_any=st.session_state["mgmt_alloc_date"], distance_km=(float(rerouted_distance) if rerouted_distance is not None else 0.0),
+                beds_avail=(get_avail_counts(assigned_av, st.session_state["mgmt_alloc_date"])["beds_available"] if assigned_av else 0),
+                icu_avail=(get_avail_counts(assigned_av, st.session_state["mgmt_alloc_date"])["icu_available"] if assigned_av else 0),
+                nearest=(nearest_list if chosen_loc else None),
+                user_location=(f"{chosen_loc} — {'driving (OSRM)' if st.session_state['mgmt_alloc_osrm'] else 'straight-line'}" if chosen_loc else None),
+            )
+            subj = f"[Dengue Allocation] {severity} — {resource} · {pd.to_datetime(st.session_state['mgmt_alloc_date']).date()}"
+            res = send_email_multi(st.session_state["mgmt_alloc_emails"], subj, base_html, personalize=True)
+            if res["sent_ok"]:
+                st.success(f"Email sent to: {', '.join(res['sent_ok'])}")
+            if res["sent_fail"]:
+                st.warning(f"Some emails failed: {res['sent_fail']}")
+
+    # ---------------- Management dashboard below (unchanged)
     st.markdown("---")
+    st.subheader("Management Dashboard")
     dash_col1, dash_col2 = st.columns([1,1])
     with dash_col1:
-        dashboard_ui_hospital = st.selectbox("Choose hospital to view dashboard", HOSPITALS_UI, index=0, key="mgmt_hospital")
+        dashboard_ui_hospital = st.selectbox("Choose hospital to view dashboard", HOSPITALS_UI, index=0, key="mgmt_dash_hospital")
     with dash_col2:
-        dashboard_date = st.date_input("View month (pick any date in month)", value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d, min_value=min_d.date() if isinstance(min_d, pd.Timestamp) else min_d, max_value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d, key="mgmt_date")
+        dashboard_date = st.date_input("View month (pick any date in month)", value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d, min_value=min_d.date() if isinstance(min_d, pd.Timestamp) else min_d, max_value=max_d.date() if isinstance(max_d, pd.Timestamp) else max_d, key="mgmt_dash_date")
 
     dashboard_start_av = UI_TO_AV.get(dashboard_ui_hospital) or dashboard_ui_hospital
     dashboard_month = month_str_from_date(dashboard_date)
@@ -1118,19 +1262,18 @@ with tab_management:
         else:
             st.write("No reservations yet.")
 
+    # Bulk management email block (unchanged)
     st.markdown("---")
     st.markdown("#### Bulk email (management): send a summary HTML to multiple addresses (personalized)")
-    mgmt_recipients = st.text_input("Management recipient emails (semicolon/comma separated)", placeholder="admin@health.gov.bd; manager@hospital.org")
-    mgmt_subject = st.text_input("Email subject", value="[Dengue Allocation - Summary] Daily Snapshot")
-    mgmt_personalize = st.checkbox("Personalize greetings for each recipient (recommended)", value=True)
-    if st.button("Send Management Email"):
+    mgmt_recipients = st.text_input("Management recipient emails (semicolon/comma separated)", placeholder="admin@health.gov.bd; manager@hospital.org", key="mgmt_bulk_emails")
+    mgmt_subject = st.text_input("Email subject", value="[Dengue Allocation - Summary] Daily Snapshot", key="mgmt_bulk_subject")
+    mgmt_personalize = st.checkbox("Personalize greetings for each recipient (recommended)", value=True, key="mgmt_bulk_personalize")
+    if st.button("Send Management Email", key="mgmt_bulk_send"):
         if not mgmt_recipients.strip():
             st.warning("Enter one or more recipient emails.")
         else:
-            # Build a simple management HTML summary (can be improved)
             mgmt_html = "<div><h2>Dengue Allocation — Management Snapshot</h2>"
             mgmt_html += f"<p>Date: {pd.to_datetime(pd.Timestamp.now()).date().isoformat()}</p>"
-            # top 5 hospitals by served this month
             sample_rows = served_df.head(10) if not served_df.empty else pd.DataFrame()
             if not sample_rows.empty:
                 mgmt_html += "<h3>Top hospitals (served)</h3><ul>"
