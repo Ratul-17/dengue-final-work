@@ -775,48 +775,6 @@ def management_view():
     reroutes_this_month = [r for r in st.session_state["reroute_log"] if r["month"] == dashboard_month]
     total_reroutes = len(reroutes_this_month)
     total_hospitals_active = served_df.shape[0] if not served_df.empty else 0
-    # -----------------------
-# Monthly trend / timeseries (NEW)
-# -----------------------
-# Build monthly timeseries dataframe from session_state["served"]
-trend_rows = []
-for (h, mon), v in st.session_state.get("served", {}).items():
-    # mon is "YYYY-MM"
-    try:
-        mon_dt = pd.to_datetime(mon + "-01")  # convert to first of month
-    except Exception:
-        # skip malformed month keys
-        continue
-    if isinstance(v, dict):
-        total_v = int(v.get("total", 0))
-        icu_v = int(v.get("ICU", 0))
-        gen_v = int(v.get("General", 0))
-    else:
-        total_v = int(v)
-        icu_v = 0
-        gen_v = total_v
-    trend_rows.append({"month": mon_dt, "hospital": h, "total": total_v, "ICU": icu_v, "General": gen_v})
-
-if trend_rows:
-    trend_df = pd.DataFrame(trend_rows)
-    # Aggregate across hospitals to get city-wide monthly totals
-    monthly_agg = trend_df.groupby("month", as_index=False)[["total","ICU","General"]].sum().sort_values("month")
-
-    # Make long form for Altair
-    monthly_long = monthly_agg.melt(id_vars=["month"], value_vars=["total","ICU","General"],
-                                    var_name="resource", value_name="count")
-
-    st.subheader("📈 Monthly Trend — Patients Served (Total / ICU / General)")
-    chart = alt.Chart(monthly_long).mark_line(point=True).encode(
-        x=alt.X("month:T", title="Month"),
-        y=alt.Y("count:Q", title="Patients served"),
-        color=alt.Color("resource:N", title="Resource"),
-        tooltip=[alt.Tooltip("month:T", title="Month"), "resource", "count"]
-    ).properties(height=300)
-    st.altair_chart(chart, use_container_width=True)
-else:
-    st.info("No historical served data available to show trend.")
-
 
     col1, col2, col3 = st.columns(3)
     col1.metric("🏥 Hospitals Active", total_hospitals_active)
