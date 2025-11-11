@@ -6,8 +6,8 @@ import re
 import math
 import requests
 import smtplib, ssl
-import altair as alt
 import pydeck as pdk
+import altair as alt
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from functools import lru_cache
@@ -102,9 +102,6 @@ html, body, [data-testid="stAppViewContainer"]{
 </style>
 """, unsafe_allow_html=True)
 
-# ===============================
-# Helper UI badge functions
-# ===============================
 def severity_badge(sev:str)->str:
     color = {"Mild":"green","Moderate":"amber","Severe":"red","Very Severe":"red"}.get(sev,"blue")
     return f'<span class="badge {color}">{sev}</span>'
@@ -117,7 +114,7 @@ def sev_percent(sev:str)->int:
     return {"Mild":25,"Moderate":50,"Severe":75,"Very Severe":100}.get(sev,50)
 
 # ===============================
-# Utilities (DF cleanup, detection)
+# Utilities and detection
 # ===============================
 def ensure_df(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     if isinstance(df, pd.DataFrame):
@@ -302,72 +299,6 @@ def geocode_hospital(ui_name: str):
     cleaned = re.sub(r"hospital|medical|college|&|,"," ", ui_name, flags=re.I).strip()
     return geocode_nominatim(cleaned)
 
-# ===============================
-# Placeholder for shared state & helpers used by both views
-# ===============================
-if "reservations" not in st.session_state: st.session_state["reservations"] = {}
-if "served" not in st.session_state: st.session_state["served"] = {}
-if "reroute_log" not in st.session_state: st.session_state["reroute_log"] = []
-
-def get_remaining(hospital: str, date, bed_type: str) -> int:
-    base = 0.0
-    key = (hospital, pd.to_datetime(date).normalize())
-    if key in availability.index:
-        base = float(availability.loc[key, "_ICUAvail" if bed_type == "ICU" else "_BedsAvail"])
-    reserved = st.session_state["reservations"].get((hospital, key[1], bed_type), 0)
-    return max(0, int(np.floor(base)) - int(reserved))
-
-def reserve_bed(hospital: str, date, bed_type: str, n: int = 1):
-    k = (hospital, pd.to_datetime(date).normalize(), bed_type)
-    st.session_state["reservations"][k] = st.session_state["reservations"].get(k, 0) + n
-
-def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
-    start_dm = UI_TO_DM.get(start_ui_name)
-    checks = []
-    if not start_dm or start_dm not in dist_mat.index:
-        return None, None, "Hospital not found in distance matrix", checks
-    row = dist_mat.loc[start_dm].astype(float).dropna().sort_values()
-    for neighbor_dm, dist in row.items():
-        if neighbor_dm == start_dm: continue
-        neighbor_av = DM_TO_AV.get(neighbor_dm)
-        rem = None
-        if neighbor_av and ((neighbor_av, pd.to_datetime(date).normalize()) in availability.index):
-            rem = get_remaining(neighbor_av, date, bed_key)
-        checks.append({"Neighbor Hospital": neighbor_dm, "Remaining Beds/ICU": rem, "Distance (km)": float(dist)})
-        if rem and rem > 0:
-            return neighbor_av, float(dist), None, checks
-    return None, None, "No hospitals with vacancy found", checks
-
-def month_str_from_date(dt) -> str:
-    return pd.to_datetime(dt).strftime("%Y-%m")
-
-def increment_served(hospital_av_name: str, date) -> None:
-    if not hospital_av_name: return
-    m = month_str_from_date(date)
-    key = (hospital_av_name, m)
-    st.session_state["served"][key] = st.session_state["served"].get(key, 0) + 1
-
-def log_reroute(original_ui: str, assigned_av: str, date) -> None:
-    m = month_str_from_date(date)
-    st.session_state["reroute_log"].append({
-        "date": pd.to_datetime(date).date().isoformat(),
-        "original_ui": original_ui,
-        "assigned_av": assigned_av,
-        "month": m
-    })
-
-def get_month_served(hospital_av_name: str, month_str: str) -> int:
-    return st.session_state["served"].get((hospital_av_name, month_str), 0)
-
-def get_avail_counts(hospital_av_name: str, date) -> dict:
-    key = (hospital_av_name, pd.to_datetime(date).normalize())
-    out = {"beds_available": None, "icu_available": None}
-    if key in availability.index:
-        row = availability.loc[key]
-        out["beds_available"] = int(np.floor(float(row["_BedsAvail"]))) if not pd.isna(row["_BedsAvail"]) else 0
-        out["icu_available"]  = int(np.floor(float(row["_ICUAvail"])))  if not pd.isna(row["_ICUAvail"])  else 0
-    return out
-
 def hospitals_with_vacancy_on_date(date_any, bed_key: str) -> list[dict]:
     results = []
     for ui_name in HOSPITALS_UI:
@@ -403,11 +334,12 @@ def nearest_available_by_user_location_no_key(user_query: str, date_any, bed_key
             "duration_min": (float(dur_min) if dur_min is not None else None),
             "lat": h_ll[0], "lng": h_ll[1],
         })
+
     enriched.sort(key=lambda x: x["distance_km"])
     return enriched[:top_k], user_ll
 
 # ===============================
-# Email helpers (multi-recipient)
+# Email helpers
 # ===============================
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -518,7 +450,83 @@ def send_email_multi(recipients, subject, html_body):
         return {"sent_ok": [], "sent_fail": [("ALL", str(e))]}
 
 # ===============================
-# Load prediction & location files (shared)
+# Session state: reservations, served (resource-aware), reroute_log
+# ===============================
+if "reservations" not in st.session_state:
+    st.session_state["reservations"] = {}
+
+# served stores per (hospital, month) a dict {"total": int, "ICU": int, "General": int}
+if "served" not in st.session_state:
+    st.session_state["served"] = {}
+
+if "reroute_log" not in st.session_state:
+    st.session_state["reroute_log"] = []
+
+# ===============================
+# Increment served (resource-aware)
+# ===============================
+def month_str_from_date(dt) -> str:
+    return pd.to_datetime(dt).strftime("%Y-%m")
+
+def increment_served(hospital_av_name: str, date, resource: Optional[str] = None) -> None:
+    """
+    Increment served counts for the hospital for the month of `date`.
+    resource may be "ICU" or "General" (or None).
+    """
+    if not hospital_av_name:
+        return
+    month = month_str_from_date(date)
+    key = (hospital_av_name, month)
+    if key not in st.session_state["served"]:
+        st.session_state["served"][key] = {"total": 0, "ICU": 0, "General": 0}
+    st.session_state["served"][key]["total"] += 1
+    if isinstance(resource, str):
+        r = resource.strip().lower()
+        if r == "icu":
+            st.session_state["served"][key]["ICU"] += 1
+        else:
+            st.session_state["served"][key]["General"] += 1
+
+def log_reroute(original_ui: str, assigned_av: str, date) -> None:
+    m = month_str_from_date(date)
+    st.session_state["reroute_log"].append({
+        "date": pd.to_datetime(date).date().isoformat(),
+        "original_ui": original_ui,
+        "assigned_av": assigned_av,
+        "month": m
+    })
+
+def get_month_served(hospital_av_name: str, month_str: str) -> int:
+    v = st.session_state["served"].get((hospital_av_name, month_str))
+    if isinstance(v, dict):
+        return int(v.get("total", 0))
+    elif isinstance(v, (int, float)):
+        return int(v)
+    return 0
+
+def served_df_for_month(month_str: str) -> pd.DataFrame:
+    """
+    Return DataFrame with columns: Hospital, Served (total), ICU, General
+    """
+    rows = []
+    for (h, m), v in st.session_state["served"].items():
+        if m == month_str:
+            if isinstance(v, dict):
+                total = int(v.get("total", 0))
+                icu = int(v.get("ICU", 0))
+                gen = int(v.get("General", 0))
+            else:
+                total = int(v)
+                icu = 0
+                gen = total
+            rows.append({"Hospital": h, "Served": total, "ICU": icu, "General": gen})
+    if not rows:
+        return pd.DataFrame(columns=["Hospital", "Served", "ICU", "General"])
+    df = pd.DataFrame(rows).sort_values("Served", ascending=False).reset_index(drop=True)
+    return df
+
+# ===============================
+# Build availability from predictions
 # ===============================
 pred_file_path = Path("Predicted dataset AIO.xlsx")
 loc_file_path  = Path("Location matrix.xlsx")
@@ -526,11 +534,9 @@ if not pred_file_path.exists() or not loc_file_path.exists():
     st.error("Required files not found in repo folder: 'Predicted dataset AIO.xlsx' and 'Location matrix.xlsx'")
     st.stop()
 
-# Read them once (used by both views)
 df_pred_raw = ensure_df(pd.read_excel(pred_file_path))
 df_loc       = ensure_df(pd.read_excel(loc_file_path))
 
-# Build availability (re-using your earlier utility)
 def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
                                         granularity: str,
                                         interp_method: str) -> pd.DataFrame:
@@ -547,9 +553,11 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
     if date_col:
         df["_Date"] = pd.to_datetime(df[date_col], errors="coerce")
     elif year_col and month_col:
-        if day_col: df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
-        else: df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" +
-                                           df[month_col].astype(int).astype(str) + "-01", errors="coerce")
+        if day_col:
+            df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
+        else:
+            df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" +
+                                         df[month_col].astype(int).astype(str) + "-01", errors="coerce")
     else:
         raise ValueError("Provide either a Date column or (Year & Month) in predictions.")
     df = df.dropna(subset=["_Date"]); df["_Date"] = df["_Date"].dt.normalize()
@@ -605,7 +613,7 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
                     .mean().set_index(["_Hospital","_Date"]).sort_index())
     return availability
 
-# Default build (management controls can change granularity later)
+# Default build
 granularity_default = "Daily"
 interp_method_default = "linear"
 try:
@@ -619,6 +627,38 @@ dist_mat = build_distance_matrix(df_loc)
 DM_TO_AV, UI_TO_DM, UI_TO_AV = build_name_maps(availability, dist_mat, HOSPITALS_UI)
 
 # ===============================
+# Helper: get_remaining, reserve, find_reroute
+# ===============================
+def get_remaining(hospital: str, date, bed_type: str) -> int:
+    base = 0.0
+    key = (hospital, pd.to_datetime(date).normalize())
+    if key in availability.index:
+        base = float(availability.loc[key, "_ICUAvail" if bed_type == "ICU" else "_BedsAvail"])
+    reserved = st.session_state["reservations"].get((hospital, key[1], bed_type), 0)
+    return max(0, int(np.floor(base)) - int(reserved))
+
+def reserve_bed(hospital: str, date, bed_type: str, n: int = 1):
+    k = (hospital, pd.to_datetime(date).normalize(), bed_type)
+    st.session_state["reservations"][k] = st.session_state["reservations"].get(k, 0) + n
+
+def find_reroute_nearest_first(start_ui_name: str, date, bed_key: str):
+    start_dm = UI_TO_DM.get(start_ui_name)
+    checks = []
+    if not start_dm or start_dm not in dist_mat.index:
+        return None, None, "Hospital not found in distance matrix", checks
+    row = dist_mat.loc[start_dm].astype(float).dropna().sort_values()
+    for neighbor_dm, dist in row.items():
+        if neighbor_dm == start_dm: continue
+        neighbor_av = DM_TO_AV.get(neighbor_dm)
+        rem = None
+        if neighbor_av and ((neighbor_av, pd.to_datetime(date).normalize()) in availability.index):
+            rem = get_remaining(neighbor_av, date, bed_key)
+        checks.append({"Neighbor Hospital": neighbor_dm, "Remaining Beds/ICU": rem, "Distance (km)": float(dist)})
+        if rem and rem > 0:
+            return neighbor_av, float(dist), None, checks
+    return None, None, "No hospitals with vacancy found", checks
+
+# ===============================
 # UI: Landing — choose mode
 # ===============================
 st.title("🏥 Integrated Hospital Dengue Patient Allocation System")
@@ -626,16 +666,15 @@ st.write("Choose mode to continue:")
 
 mode = st.radio("Mode", ("Management View", "Individual View"), horizontal=True)
 
-# Optional management password if present in secrets; otherwise open
 mgmt_password_secret = st.secrets.get("management_password") if st.secrets else None
 
 # -------------------------------
-# Management view function
+# Management view (replaced & fixed)
 # -------------------------------
 def management_view():
     st.header("🔧 Management View")
 
-    # Optional password check (uses mgmt_password_secret from outer scope)
+    # Optional password check
     if mgmt_password_secret:
         pw = st.text_input("Management Password", type="password")
         if not pw:
@@ -660,11 +699,8 @@ def management_view():
         except Exception as e:
             st.sidebar.error(f"Error rebuilding data: {e}")
 
-    # ===============================
-    # Allocation Section
-    # ===============================
+    # Allocation form
     st.subheader("🧾 Patient Intake (Management)")
-
     with st.form("mgmt_allocation_form"):
         c1, c2, c3, c4 = st.columns([1.3, 1, 1, 1])
         all_dates = sorted(list(set([d for _, d in availability.index])))
@@ -683,7 +719,6 @@ def management_view():
             st.caption(f"Time: **{gran}** · Interp: **{interp if gran!='Monthly' else 'N/A'}**")
         submit = st.form_submit_button("🚑 Allocate (Management)")
 
-    # Allocation logic
     if submit:
         p_score, s_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
         severity = verdict_from_score(s_score)
@@ -705,11 +740,12 @@ def management_view():
 
         if assigned_av:
             reserve_bed(assigned_av, date_input, bed_key, 1)
-            increment_served(assigned_av, date_input)
+            resource_bucket = "ICU" if bed_key == "ICU" else "General"
+            increment_served(assigned_av, date_input, resource_bucket)
             if assigned_av != (start_av or hospital_ui):
                 log_reroute(hospital_ui, assigned_av, date_input)
 
-        # Show summary cards
+        # Result cards
         st.markdown("### Allocation Result")
         st.markdown('<div class="grid grid-4">', unsafe_allow_html=True)
         st.markdown(f'<div class="card"><div class="kpi">{s_score}</div><div class="kpi-label">Severity Score</div><div class="ribbon">{severity_badge(severity)}</div></div>', unsafe_allow_html=True)
@@ -724,51 +760,33 @@ def management_view():
             with st.expander("🧪 Debug: Reroute checks"):
                 st.dataframe(pd.DataFrame(debug_checks), use_container_width=True)
 
-    # ===============================
-    # Interactive Dashboard Section
-    # ===============================
+    # Dashboard
     st.markdown("---")
     st.header("📊 Interactive Hospital Dashboard")
 
-    # Month selector
     all_dates = sorted(list(set([d for _, d in availability.index])))
     dashboard_date = st.date_input("Pick a date to view month", value=all_dates[-1])
     dashboard_month = month_str_from_date(dashboard_date)
 
-    # Build served_df safely (fix KeyError when empty)
-    served_rows = [
-        {"Hospital": h, "Served": cnt}
-        for (h, m), cnt in st.session_state["served"].items()
-        if m == dashboard_month
-    ]
-    if served_rows:
-        served_df = pd.DataFrame(served_rows).sort_values("Served", ascending=False).reset_index(drop=True)
-    else:
-        served_df = pd.DataFrame(columns=["Hospital", "Served"])
-
-    # Metrics
+    served_df = served_df_for_month(dashboard_month)
     total_served = int(served_df["Served"].sum()) if not served_df.empty else 0
+    total_icu = int(served_df["ICU"].sum()) if not served_df.empty else 0
+    total_general = int(served_df["General"].sum()) if not served_df.empty else 0
     reroutes_this_month = [r for r in st.session_state["reroute_log"] if r["month"] == dashboard_month]
     total_reroutes = len(reroutes_this_month)
-    total_hospitals_active = len(served_df) if not served_df.empty else 0
+    total_hospitals_active = served_df.shape[0] if not served_df.empty else 0
 
     col1, col2, col3 = st.columns(3)
     col1.metric("🏥 Hospitals Active", total_hospitals_active)
     col2.metric("👥 Patients Served (this month)", total_served)
     col3.metric("🔁 Reroutes (this month)", total_reroutes)
 
-    # Charts & table (only if data exists)
     if not served_df.empty:
-        # Bar chart
         st.subheader("Patients Served — By Hospital")
         st.bar_chart(served_df.set_index("Hospital")["Served"])
 
-        # Altair pie chart for resource ratio (example: approximate ICUs served if you collect that later)
-        st.subheader("Quick Resource Breakdown (approx.)")
-        # Make a small mock split: if you later store resource counts, replace this with real data.
-        icu_approx = int(round(total_served * 0.35))  # placeholder ratio
-        general_approx = max(0, total_served - icu_approx)
-        data_pie = pd.DataFrame({"Resource": ["ICU", "General Bed"], "Count": [icu_approx, general_approx]})
+        st.subheader("Resource Breakdown")
+        data_pie = pd.DataFrame({"Resource": ["ICU", "General Bed"], "Count": [total_icu, total_general]})
         chart = alt.Chart(data_pie).mark_arc(innerRadius=40).encode(
             theta=alt.Theta(field="Count", type="quantitative"),
             color=alt.Color("Resource:N"),
@@ -781,7 +799,6 @@ def management_view():
     else:
         st.info("No patients served data for this month yet.")
 
-    # Reroute log
     with st.expander("🔁 Reroute Log (this month)"):
         if reroutes_this_month:
             st.dataframe(pd.DataFrame(reroutes_this_month), use_container_width=True)
@@ -789,7 +806,7 @@ def management_view():
             st.write("No reroutes recorded this month.")
 
 # -------------------------------
-# Individual view function
+# Individual view
 # -------------------------------
 def individual_view():
     st.header("🧍 Individual View — Patient Self-Assessment")
@@ -814,7 +831,7 @@ def individual_view():
             weight = st.number_input("Weight (kg)", min_value=1.0, max_value=250.0, value=60.0)
             igg_val = st.selectbox("IgG", [0,1], index=0)
         use_driving_eta = st.checkbox("Use driving ETA (beta)", value=False)
-        email_addresses = st.text_input("📧 Recipient Email(s) (optional, ; or , or ;) ")
+        email_addresses = st.text_input("📧 Recipient Email(s) (optional, separate with ; or ,)")
         email_opt_in = st.checkbox("Send results via email to recipients above", value=False)
         submit = st.form_submit_button("Check nearest facilities")
 
@@ -840,11 +857,9 @@ def individual_view():
             st.info("Please pick an area or type a location to show nearest available hospitals.")
         else:
             if nearest_list:
-                # If resource is ICU, ensure we highlight ICU available (we already filtered by bed_key)
                 df_near = pd.DataFrame([{"Hospital": n["ui_name"], "Vacancy (Beds/ICU)": n["remaining"], "Distance (km)": round(n["distance_km"],1), "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") is not None else None)} for n in nearest_list])
                 st.dataframe(df_near, use_container_width=True)
 
-                # Map w white user pin + red hospital pins
                 layers = []
                 if user_ll:
                     user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
@@ -863,26 +878,26 @@ def individual_view():
             else:
                 st.warning("No nearby hospitals with available beds of required type found for the selected date.")
 
-        # Allow reservation & email optionally for individual (if they choose)
+        # Reservation option
         if nearest_list:
             chosen_hospital = st.selectbox("Choose a hospital to reserve (optional)", [n["ui_name"] for n in nearest_list] + ["—"], index=0)
             if st.button("Reserve 1 bed at chosen hospital (temporary)"):
                 if chosen_hospital and chosen_hospital != "—":
                     av_name = UI_TO_AV.get(chosen_hospital) or chosen_hospital
                     reserve_bed(av_name, date_input, "ICU" if bed_key=="ICU" else "Normal", 1)
-                    increment_served(av_name, date_input)
+                    resource_bucket = "ICU" if bed_key == "ICU" else "General"
+                    increment_served(av_name, date_input, resource_bucket)
                     st.success(f"Reserved 1 {'ICU' if bed_key=='ICU' else 'General'} bed at {chosen_hospital} for {pd.to_datetime(date_input).date()} (temporary).")
                 else:
                     st.info("Select a hospital to reserve.")
 
-        # Send email if opted
-        beds_pred = icu_pred = 0
-        # we won't assign an 'assigned_av' automatically here — this is individual suggestion
+        # Suggested hospital for email summary
         assigned_av = nearest_list[0]["ui_name"] if nearest_list else None
+        beds_pred = icu_pred = 0
         if assigned_av:
             assigned_counts = get_avail_counts(UI_TO_AV.get(assigned_av) or assigned_av, date_input)
             beds_pred = assigned_counts["beds_available"] if assigned_counts["beds_available"] is not None else 0
-            icu_pred  = assigned_counts["icu_available"]  if assigned_counts["icu_available"]  is not None else 0
+            icu_pred  = assigned_counts["icu_available"]  if assigned_counts["icu_available"] is not None else 0
 
         if email_opt_in and email_addresses.strip():
             html = build_allocation_email_html(
@@ -900,9 +915,7 @@ def individual_view():
             if res["sent_fail"]:
                 st.warning(f"Some emails failed: {res['sent_fail']}")
 
-# -------------------------------
-# Route to the selected view
-# -------------------------------
+# Route
 if mode == "Management View":
     management_view()
 else:
