@@ -8,6 +8,7 @@ import requests
 import smtplib, ssl
 import pydeck as pdk
 import altair as alt
+import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from functools import lru_cache
@@ -270,6 +271,7 @@ def osrm_drive(origin_ll, dest_ll):
     except Exception:
         return None
 
+# friendly place strings (used by nominatim fallback)
 HOSPITAL_PLACES = {
     "Dhaka Medical College Hospital": "Dhaka Medical College Hospital, Dhaka, Bangladesh",
     "SSMC & Mitford Hospital": "SSMC & Mitford Hospital, Dhaka, Bangladesh",
@@ -291,14 +293,76 @@ HOSPITAL_PLACES = {
     "Ad-Din Medical College Hospital": "Ad-Din Medical College Hospital, Dhaka, Bangladesh",
 }
 
-@lru_cache(maxsize=256)
+# ---------- Manual coordinate overrides (useful if geocoding returns wrong place) ----------
+# This file will persist overrides across restarts
+OVERRIDES_FILE = Path("hospital_coords_overrides.json")
+# in-code manual map (optional) - you can pre-populate this dict with trusted coords
+HOSPITAL_COORDS = {
+    # Example:
+    # "Sirajul Islam Medical College Hospital": (23.7500, 90.3600),
+}
+
+# load persisted overrides (if exists)
+def _load_overrides():
+    try:
+        if OVERRIDES_FILE.exists():
+            data = json.loads(OVERRIDES_FILE.read_text(encoding="utf-8"))
+            # expect dict: hospital -> [lat, lon]
+            return {k: (float(v[0]), float(v[1])) for k, v in data.items()}
+    except Exception:
+        pass
+    return {}
+
+def _save_overrides(dct):
+    try:
+        # convert tuples to lists for json
+        j = {k: [float(v[0]), float(v[1])] for k, v in dct.items()}
+        OVERRIDES_FILE.write_text(json.dumps(j, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+# initialize session state storage (will be merged with persistent overrides)
+if "hospital_coords_override" not in st.session_state:
+    st.session_state["hospital_coords_override"] = _load_overrides()
+
+# geocode_hospital (override-aware, not cached so overrides take effect immediately)
 def geocode_hospital(ui_name: str):
+    """
+    Resolve hospital UI name -> (lat, lon)
+    Priority:
+      1) runtime override in st.session_state["hospital_coords_override"]
+      2) manual HOSPITAL_COORDS dict (maintained in code)
+      3) fallback to HOSPITAL_PLACES + Nominatim
+    """
+    # 1) runtime overrides (set via UI)
+    overrides = st.session_state.get("hospital_coords_override", {}) or {}
+    if ui_name in overrides:
+        try:
+            lat, lon = overrides[ui_name]
+            return (float(lat), float(lon))
+        except Exception:
+            pass
+
+    # 2) static manual coords dictionary in code
+    if ui_name in HOSPITAL_COORDS:
+        try:
+            lat, lon = HOSPITAL_COORDS[ui_name]
+            return (float(lat), float(lon))
+        except Exception:
+            pass
+
+    # 3) fallback to nominatim using the HOSPITAL_PLACES mapping, then cleaned name
     q1 = HOSPITAL_PLACES.get(ui_name, f"{ui_name}, Dhaka, Bangladesh")
     ll = geocode_nominatim(q1)
-    if ll: return ll
+    if ll:
+        return ll
     cleaned = re.sub(r"hospital|medical|college|&|,"," ", ui_name, flags=re.I).strip()
     return geocode_nominatim(cleaned)
 
+# ===============================
+# Helper functions for availability & nearest
+# ===============================
 def hospitals_with_vacancy_on_date(date_any, bed_key: str) -> list[dict]:
     results = []
     for ui_name in HOSPITALS_UI:
@@ -669,7 +733,7 @@ mode = st.radio("Mode", ("Management View", "Individual View"), horizontal=True)
 mgmt_password_secret = st.secrets.get("management_password") if st.secrets else None
 
 # -------------------------------
-# Management view (replaced & fixed)
+# Management view (with admin coords UI)
 # -------------------------------
 def management_view():
     st.header("🔧 Management View")
@@ -698,6 +762,47 @@ def management_view():
             st.sidebar.success("✅ Rebuilt successfully.")
         except Exception as e:
             st.sidebar.error(f"Error rebuilding data: {e}")
+
+    # -------------------------
+    # Admin: inspect & override hospital coordinates
+    # -------------------------
+    st.markdown("### 🗺️ Hospital Geocoding / Overrides")
+    if st.button("Show current hospital coordinates (geocoded)"):
+        rows = []
+        for ui_name in HOSPITALS_UI:
+            ll = geocode_hospital(ui_name)
+            rows.append({"Hospital": ui_name, "Latitude": (ll[0] if ll else None), "Longitude": (ll[1] if ll else None)})
+        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+
+    st.markdown("If a hospital is at the wrong location, enter corrected coordinates below (lat, lon).")
+    with st.form("coords_override_form"):
+        col_a, col_b = st.columns([3,1])
+        with col_a:
+            selected_hospital = st.selectbox("Hospital to override", ["—"] + HOSPITALS_UI, index=0)
+            lat_input = st.text_input("Latitude (decimal)", placeholder="e.g. 23.75")
+            lon_input = st.text_input("Longitude (decimal)", placeholder="e.g. 90.37")
+        with col_b:
+            submit_coords = st.form_submit_button("Save override")
+    if submit_coords and selected_hospital and selected_hospital != "—":
+        try:
+            lat_v = float(lat_input.strip())
+            lon_v = float(lon_input.strip())
+            st.session_state["hospital_coords_override"][selected_hospital] = (lat_v, lon_v)
+            _save_overrides(st.session_state["hospital_coords_override"])
+            st.success(f"Saved override for {selected_hospital}. New coords: ({lat_v}, {lon_v})")
+        except Exception as e:
+            st.error(f"Invalid coordinates: {e}")
+
+    # Optionally clear an override
+    st.markdown("Clear an override:")
+    colc, cold = st.columns([3,1])
+    with colc:
+        to_clear = st.selectbox("Hospital override to clear", ["—"] + list(st.session_state["hospital_coords_override"].keys()), index=0)
+    with cold:
+        if st.button("Clear override") and to_clear and to_clear != "—":
+            st.session_state["hospital_coords_override"].pop(to_clear, None)
+            _save_overrides(st.session_state["hospital_coords_override"])
+            st.success(f"Cleared override for {to_clear}")
 
     # Allocation form
     st.subheader("🧾 Patient Intake (Management)")
@@ -781,18 +886,54 @@ def management_view():
     col2.metric("👥 Patients Served (this month)", total_served)
     col3.metric("🔁 Reroutes (this month)", total_reroutes)
 
+    # -----------------------
+    # Monthly trend / timeseries
+    # -----------------------
+    trend_rows = []
+    for (h, mon), v in st.session_state.get("served", {}).items():
+        try:
+            mon_dt = pd.to_datetime(mon + "-01")
+        except Exception:
+            continue
+        if isinstance(v, dict):
+            total_v = int(v.get("total", 0))
+            icu_v = int(v.get("ICU", 0))
+            gen_v = int(v.get("General", 0))
+        else:
+            total_v = int(v)
+            icu_v = 0
+            gen_v = total_v
+        trend_rows.append({"month": mon_dt, "hospital": h, "total": total_v, "ICU": icu_v, "General": gen_v})
+
+    if trend_rows:
+        trend_df = pd.DataFrame(trend_rows)
+        monthly_agg = trend_df.groupby("month", as_index=False)[["total","ICU","General"]].sum().sort_values("month")
+        monthly_long = monthly_agg.melt(id_vars=["month"], value_vars=["total","ICU","General"],
+                                        var_name="resource", value_name="count")
+
+        st.subheader("📈 Monthly Trend — Patients Served (Total / ICU / General)")
+        chart = alt.Chart(monthly_long).mark_line(point=True).encode(
+            x=alt.X("month:T", title="Month"),
+            y=alt.Y("count:Q", title="Patients served"),
+            color=alt.Color("resource:N", title="Resource"),
+            tooltip=[alt.Tooltip("month:T", title="Month"), "resource", "count"]
+        ).properties(height=300)
+        st.altair_chart(chart, use_container_width=True)
+    else:
+        st.info("No historical served data available to show trend.")
+
     if not served_df.empty:
         st.subheader("Patients Served — By Hospital")
         st.bar_chart(served_df.set_index("Hospital")["Served"])
 
         st.subheader("Resource Breakdown")
         data_pie = pd.DataFrame({"Resource": ["ICU", "General Bed"], "Count": [total_icu, total_general]})
-        chart = alt.Chart(data_pie).mark_arc(innerRadius=40).encode(
+        chart2 = alt.Chart(data_pie).mark_arc(innerRadius=40).encode(
             theta=alt.Theta(field="Count", type="quantitative"),
             color=alt.Color("Resource:N"),
             tooltip=["Resource", "Count"]
         )
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart2, use_container_width=True)
 
         st.subheader("Raw served table")
         st.dataframe(served_df, use_container_width=True)
@@ -915,7 +1056,7 @@ def individual_view():
             if res["sent_fail"]:
                 st.warning(f"Some emails failed: {res['sent_fail']}")
 
-# Route
+# Route to appropriate view
 if mode == "Management View":
     management_view()
 else:
