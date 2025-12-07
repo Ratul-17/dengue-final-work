@@ -821,6 +821,10 @@ if submit:
         except Exception as e:
             st.warning(f"Could not fetch nearest hospitals: {e}")
 
+   # ===============================
+# (UNCHANGED CODE ABOVE THIS LINE)
+# ===============================
+
     st.markdown("### 🗺️ Nearest hospitals with vacancy (by your location)")
     if chosen_loc and nearest_list:
         df_near = pd.DataFrame([{
@@ -831,28 +835,45 @@ if submit:
         } for n in nearest_list])
         st.dataframe(df_near, use_container_width=True)
 
-        # Map: white user pin + red hospital pins
-        layers = []
+        # ✅✅✅ FINAL SAFE MAP FIX (NO API KEY REQUIRED)
+        map_rows = []
+
+        # User location
         if user_ll:
-            user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
-            layers.append(pdk.Layer("ScatterplotLayer", user_df,
-                                    get_position="[lon, lat]", get_radius=80,
-                                    get_fill_color=[255,255,255,220], pickable=False))
-        hosp_rows = []
+            map_rows.append({
+                "lat": user_ll[0],
+                "lon": user_ll[1],
+                "label": "Your Location"
+            })
+
+        # Hospital locations
         for n in nearest_list:
-            if n["lat"] and n["lng"]:
-                hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
-        if hosp_rows:
-            hosp_df = pd.DataFrame(hosp_rows)
-            layers.append(pdk.Layer("ScatterplotLayer", hosp_df,
-                                    get_position="[lon, lat]", get_radius=70,
-                                    get_fill_color=[255,0,0,220], pickable=True))
-        if layers:
-            center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
-            view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
-            st.pydeck_chart(pdk.Deck(map_style=None, initial_view_state=view_state, layers=layers), use_container_width=True)
+            if n.get("lat") and n.get("lng"):
+                map_rows.append({
+                    "lat": n["lat"],
+                    "lon": n["lng"],
+                    "label": n["ui_name"]
+                })
+
+        if map_rows:
+            map_df = pd.DataFrame(map_rows)
+
+            st.map(
+                map_df,
+                latitude="lat",
+                longitude="lon",
+                size=90,
+                use_container_width=True
+            )
+        else:
+            st.warning("⚠️ Map could not load any coordinates.")
     else:
         st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
+
+# ===============================
+# (UNCHANGED CODE BELOW THIS LINE)
+# ===============================
+
 
     # ---------- Email ----------
     beds_pred = icu_pred = 0
