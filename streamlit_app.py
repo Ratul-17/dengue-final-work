@@ -832,7 +832,7 @@ if submit:
         st.dataframe(df_near, use_container_width=True)
 
         # Map: white user pin + red hospital pins
-               # Map: user + hospitals (robust version)
+               # Map: user + nearest hospitals with free Carto/OSM basemap (no API key)
         map_points = []
 
         # User point
@@ -866,7 +866,7 @@ if submit:
         if map_points:
             map_df = pd.DataFrame(map_points)
 
-            # Safe center (average to avoid index issues)
+            # Center map on average of all points (safe even if only user or only hospitals)
             view_state = pdk.ViewState(
                 latitude=map_df["lat"].mean(),
                 longitude=map_df["lon"].mean(),
@@ -877,7 +877,7 @@ if submit:
             layer = pdk.Layer(
                 "ScatterplotLayer",
                 data=map_df,
-                get_position="[lon, lat]",   # lon first, then lat
+                get_position="[lon, lat]",
                 get_radius="size",
                 get_fill_color="color",
                 pickable=True,
@@ -886,14 +886,14 @@ if submit:
             deck = pdk.Deck(
                 layers=[layer],
                 initial_view_state=view_state,
-                map_style=None,              # no Mapbox token needed
+                # Free basemap: Carto/OSM style, no token required
+                map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
                 tooltip={"text": "{name}"},
             )
 
             st.pydeck_chart(deck, use_container_width=True)
         else:
             st.info("Could not build map — no valid coordinates returned for user or hospitals.")
-
 
     # ---------- Email ----------
     beds_pred = icu_pred = 0
