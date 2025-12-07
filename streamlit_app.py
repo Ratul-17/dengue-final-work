@@ -692,7 +692,8 @@ if submit:
             for n in nearest_list:
                 folium.CircleMarker(location=[n["lat"], n["lng"]], radius=7, color="red", fill=True, fill_color="red",
                                     tooltip=f"{n['ui_name']} — {n['remaining']} free").add_to(m)
-            st_folium(m, width="100%", height=480)
+            # UPDATED: keep map stable (no disappearing) by using use_container_width + a fixed key
+            st_folium(m, use_container_width=True, height=480, key="nearest_hospitals_map")
         else:
             st.write("Map requires `streamlit-folium`; install it for map display.")
     else:
