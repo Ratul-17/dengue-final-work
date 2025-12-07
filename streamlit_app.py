@@ -61,7 +61,6 @@ DHAKA_AREAS = [
 # ===============================
 # OFFLINE COORDINATES (Dhaka areas & hospitals)
 # ===============================
-# Area coords: lat, lon (approx)
 AREA_COORDS = {
     "Dhanmondi": (23.7461, 90.3675),
     "Mohammadpur": (23.7645, 90.3580),
@@ -134,7 +133,6 @@ AREA_COORDS = {
     "Paribagh": (23.7410, 90.3935)
 }
 
-# Hospital coords: lat, lon
 HOSPITAL_COORDS = {
     "Dhaka Medical College Hospital": (23.7289, 90.3935),
     "SSMC & Mitford Hospital": (23.7067, 90.4075),
@@ -156,6 +154,9 @@ HOSPITAL_COORDS = {
     "Ad-Din Medical College Hospital": (23.7160, 90.4230)
 }
 
+# Free basemap (Carto Positron) - no API key required
+FREE_MAP_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+
 # ===============================
 # Styles (theme aware)
 # ===============================
@@ -173,7 +174,7 @@ st.markdown("""
     --ring:#22d3ee; --good:#10b981; --warn:#f59e0b; --bad:#ef4444; --info:#3b82f6;
   }
 }
-html, body, [data-testid="stAppViewContainer"]{background:linear-gradient(135deg,var(--bg) 0%,var(--bg) 40%,var(--bg2) 100%) !important;color:var(--text);}
+html, body, [data-testid="stAppViewContainer"]{background:linear-gradient(135deg,var(--bg) 0%,var(--bg2) 40%,var(--bg2) 100%) !important;color:var(--text);}
 .card{border-radius:18px;padding:18px 20px;background:var(--card);backdrop-filter:blur(8px);border:1px solid var(--border);box-shadow:var(--shadow);}
 .grid{display:grid; gap:14px;}
 .grid-4{grid-template-columns:repeat(4,minmax(0,1fr));}
@@ -317,9 +318,6 @@ def _with_bd_context(q: str) -> str:
 
 @lru_cache(maxsize=512)
 def geocode_nominatim(query: str):
-    """
-    Online Nominatim lookup (fallback). May fail if outbound requests blocked.
-    """
     q = _with_bd_context(query)
     url = "https://nominatim.openstreetmap.org/search"
     headers = {"User-Agent": f"dscc-dengue-allocator/1.1 ({_contact_email_for_user_agent()})"}
@@ -363,24 +361,16 @@ def osrm_drive(origin_ll, dest_ll):
         return None
 
 def geocode_user_location(query: str):
-    """
-    Offline-first user geocoder:
-      1) exact area in AREA_COORDS
-      2) fuzzy match to area name contained in query
-      3) hospital name exact match
-      4) fallback to Nominatim (may fail)
-    Returns (lat, lon) or None.
-    """
     if not query or not str(query).strip():
         return None
     q = str(query).strip()
 
-    # exact area match (case-insensitive)
+    # exact match
     for area, ll in AREA_COORDS.items():
         if q.lower() == area.lower():
             return ll
 
-    # fuzzy: area substring
+    # fuzzy substring
     for area, ll in AREA_COORDS.items():
         if area.lower() in q.lower():
             return ll
@@ -390,24 +380,18 @@ def geocode_user_location(query: str):
         if q.lower() == h.lower():
             return ll
 
-    # fallback: try nominatim (may fail)
+    # fallback: nominatim (may fail)
     return geocode_nominatim(q)
 
 @lru_cache(maxsize=256)
 def geocode_hospital(ui_name: str):
-    """
-    Offline-first hospital geocode.
-    """
     if not ui_name:
         return None
-    # try offline table
     if ui_name in HOSPITAL_COORDS:
         return HOSPITAL_COORDS[ui_name]
-    # try lookup by normalized keys
     for hname, ll in HOSPITAL_COORDS.items():
         if norm_key(hname) == norm_key(ui_name):
             return ll
-    # fallback to Nominatim
     q1 = ui_name + ", Dhaka, Bangladesh"
     return geocode_nominatim(q1)
 
@@ -425,10 +409,6 @@ def hospitals_with_vacancy_on_date(date_any, bed_key: str) -> list[dict]:
 
 def nearest_available_by_user_location_no_key(user_query: str, date_any, bed_key: str,
                                               top_k: int = 3, prefer_driving_eta: bool = False):
-    """
-    Returns (list, user_ll). Each item: {ui_name, av_name, remaining, distance_km, duration_min, lat, lng}
-    Dhaka/BD bias + sanity filter: drop >80 km.
-    """
     user_ll = geocode_user_location(user_query)
     if not user_ll:
         return [], None
@@ -815,7 +795,6 @@ if submit:
         note = f"Rerouted to {assigned_av}" if assigned_av else err
 
     if assigned_av:
-        # reserve and increment:
         reserve_bed(assigned_av, date_input, bed_key, 1)
         increment_served(assigned_av, date_input, resource if resource=="ICU" else "General")
         if assigned_av != (start_av or hospital_ui):
@@ -943,7 +922,10 @@ if submit:
             user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
             layers.append(pdk.Layer("ScatterplotLayer", user_df,
                                     get_position="[lon, lat]", get_radius=80,
-                                    get_fill_color=[255,255,255,220], pickable=False))
+                                    get_fill_color=[255,255,255,220], pickable=True))
+            layers.append(pdk.Layer("TextLayer", user_df,
+                                    get_position="[lon, lat]", get_text="name",
+                                    get_size=18, get_color=[200,200,200], get_alignment_baseline="'bottom'"))
 
         hosp_rows = []
         for n in nearest_list:
@@ -954,11 +936,15 @@ if submit:
             layers.append(pdk.Layer("ScatterplotLayer", hosp_df,
                                     get_position="[lon, lat]", get_radius=70,
                                     get_fill_color=[255,0,0,220], pickable=True))
+            layers.append(pdk.Layer("TextLayer", hosp_df,
+                                    get_position="[lon, lat]", get_text="name",
+                                    get_size=14, get_color=[255,200,200], get_alignment_baseline="'top'"))
+
         # Safe center:
         if layers:
             center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
             view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
-            st.pydeck_chart(pdk.Deck(map_style="open-street-map", initial_view_state=view_state, layers=layers), use_container_width=True)
+            st.pydeck_chart(pdk.Deck(map_style=FREE_MAP_STYLE, initial_view_state=view_state, layers=layers), use_container_width=True)
         else:
             st.info("No valid coordinates found to render the map (missing hospital coordinates).")
 
@@ -985,13 +971,13 @@ if submit:
                 user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
                 layers.append(pdk.Layer("ScatterplotLayer", user_df,
                                         get_position="[lon, lat]", get_radius=80,
-                                        get_fill_color=[255,255,255,220], pickable=False))
+                                        get_fill_color=[255,255,255,220], pickable=True))
                 hosp_df = pd.DataFrame([{"name":h["ui_name"], "lat":h["lat"], "lon":h["lon"]} for h in hosp_geo_sorted])
                 layers.append(pdk.Layer("ScatterplotLayer", hosp_df,
                                         get_position="[lon, lat]", get_radius=70,
                                         get_fill_color=[255,0,0,220], pickable=True))
                 view_state = pdk.ViewState(latitude=user_ll[0], longitude=user_ll[1], zoom=12, pitch=0)
-                st.pydeck_chart(pdk.Deck(map_style="open-street-map", initial_view_state=view_state, layers=layers), use_container_width=True)
+                st.pydeck_chart(pdk.Deck(map_style=FREE_MAP_STYLE, initial_view_state=view_state, layers=layers), use_container_width=True)
             else:
                 st.warning("Could not geocode hospitals for fallback mapping. See Debug for details.")
         else:
