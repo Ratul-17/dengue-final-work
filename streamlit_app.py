@@ -12,7 +12,7 @@ from streamlit_folium import st_folium
 # APP CONFIG
 # ===============================
 st.set_page_config(page_title="Dengue Allocation", page_icon="🏥", layout="wide")
-st.title("🏥 Dengue Patient Allocation System (Free OSM Maps)")
+st.title("🏥 Dengue Patient Allocation System (Free OSM Map)")
 
 # ===============================
 # HOSPITAL LIST
@@ -45,27 +45,57 @@ DHAKA_AREAS = [
 ]
 
 # ===============================
-# ✅ FREE ONLINE GEOCODING (NOMINATIM)
+# ✅ OFFLINE DHAKA FALLBACK COORDS (NEVER FAILS)
+# ===============================
+DHAKA_FALLBACK = {
+    "Dhanmondi": (23.7465, 90.3760),
+    "Gulshan": (23.7806, 90.4170),
+    "Uttara": (23.8759, 90.3795),
+    "Mirpur": (23.8223, 90.3654),
+    "Banani": (23.7936, 90.4066),
+    "Mohammadpur": (23.7589, 90.3610),
+    "Motijheel": (23.7333, 90.4172),
+    "Rampura": (23.7583, 90.4286),
+    "Badda": (23.7800, 90.4250),
+    "Khilgaon": (23.7461, 90.4322),
+    "Shyamoli": (23.7742, 90.3656),
+    "Farmgate": (23.7576, 90.3890),
+    "Malibagh": (23.7485, 90.4112),
+    "Moghbazar": (23.7518, 90.4025),
+}
+
+# ===============================
+# ✅ HARDENED FREE GEOCODER (CLOUD SAFE)
 # ===============================
 @lru_cache(maxsize=256)
-def geocode(place):
+def geocode(place: str):
+    if not place or len(place.strip()) < 3:
+        return None
+
     url = "https://nominatim.openstreetmap.org/search"
     params = {
         "q": f"{place}, Dhaka, Bangladesh",
         "format": "json",
         "limit": 1
     }
-    headers = {"User-Agent": "dengue-app"}
+
+    headers = {
+        "User-Agent": "dengue-allocation-app/1.0 (contact: admin@demo.com)"
+    }
+
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=15)
-        if r.status_code == 200 and r.json():
-            return float(r.json()[0]["lat"]), float(r.json()[0]["lon"])
+        r = requests.get(url, params=params, headers=headers, timeout=20)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if not data:
+            return None
+        return float(data[0]["lat"]), float(data[0]["lon"])
     except:
-        pass
-    return None
+        return None
 
 # ===============================
-# DISTANCE FORMULA
+# DISTANCE FUNCTION
 # ===============================
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371
@@ -74,7 +104,7 @@ def haversine(lat1, lon1, lat2, lon2):
     return 2 * R * math.asin(math.sqrt(a))
 
 # ===============================
-# FAKE AVAILABILITY DATA (REPLACE WITH REAL LATER)
+# ✅ FAKE AVAILABILITY DATA (REPLACE WITH YOUR EXCEL LOGIC LATER)
 # ===============================
 @st.cache_data
 def fake_availability():
@@ -94,9 +124,11 @@ availability = fake_availability()
 # ===============================
 with st.form("allocation"):
     col1, col2 = st.columns(2)
+
     with col1:
         hospital_ui = st.selectbox("Hospital", HOSPITALS_UI)
         pick_area = st.selectbox("Pick Dhaka Area", DHAKA_AREAS)
+
     with col2:
         age = st.number_input("Age", 0, 120, 25)
         platelet = st.number_input("Platelet", 0, 300000, 120000)
@@ -104,12 +136,11 @@ with st.form("allocation"):
     submit = st.form_submit_button("🚑 Allocate")
 
 # ===============================
-# PROCESS + FREE MAP
+# PROCESS + MAP
 # ===============================
 if submit:
     st.subheader("✅ Allocation Result")
 
-    # Severity
     if platelet < 50000:
         severity = "Severe"
         req = "ICU"
@@ -122,33 +153,39 @@ if submit:
 
     st.success(f"Severity: {severity} | Required: {req}")
 
-    # ✅ USER LOCATION
+    # ✅ USER LOCATION (ONLINE + FALLBACK)
     user_ll = geocode(pick_area)
+    if not user_ll and pick_area in DHAKA_FALLBACK:
+        user_ll = DHAKA_FALLBACK[pick_area]
+
     if not user_ll:
-        st.error("❌ Failed to detect your area location.")
+        st.error("❌ Location detection failed.")
         st.stop()
 
     # ===============================
-    # ✅ HOSPITAL GEO + NEAREST 3
+    # ✅ NEAREST HOSPITAL CALCULATION
     # ===============================
     nearest_list = []
 
     for _, row in availability.iterrows():
         h_ll = geocode(row["Hospital"])
-        if h_ll:
-            dist = haversine(user_ll[0], user_ll[1], h_ll[0], h_ll[1])
 
-            nearest_list.append({
-                "Hospital": row["Hospital"],
-                "Beds": row["Beds"],
-                "ICU": row["ICU"],
-                "lat": h_ll[0],
-                "lon": h_ll[1],
-                "dist": round(dist, 2)
-            })
+        if not h_ll:
+            continue
+
+        dist = haversine(user_ll[0], user_ll[1], h_ll[0], h_ll[1])
+
+        nearest_list.append({
+            "Hospital": row["Hospital"],
+            "Beds": row["Beds"],
+            "ICU": row["ICU"],
+            "lat": h_ll[0],
+            "lon": h_ll[1],
+            "dist": round(dist, 2)
+        })
 
     if not nearest_list:
-        st.error("❌ Could not geocode any hospital.")
+        st.error("❌ Could not geocode hospitals.")
         st.stop()
 
     nearest_list = sorted(nearest_list, key=lambda x: x["dist"])[:3]
@@ -161,7 +198,7 @@ if submit:
     # ===============================
     # ✅✅✅ FREE OPENSTREETMAP MAP (FOLIUM)
     # ===============================
-    st.subheader("🗺️ Nearest Hospitals (Free OpenStreetMap)")
+    st.subheader("🗺️ Nearest Hospitals (OpenStreetMap)")
 
     m = folium.Map(location=user_ll, zoom_start=13)
 
@@ -180,7 +217,6 @@ if submit:
             icon=folium.Icon(color="red", icon="plus-sign")
         ).add_to(m)
 
-    # Render map in Streamlit
-    st_folium(m, width=1100, height=500)
+    st_folium(m, width=1100, height=520)
 
-    st.success("✅ Free map loaded successfully using OpenStreetMap.")
+    st.success("✅ Map loaded using FREE OpenStreetMap.")
