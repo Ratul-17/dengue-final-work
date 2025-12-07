@@ -832,27 +832,68 @@ if submit:
         st.dataframe(df_near, use_container_width=True)
 
         # Map: white user pin + red hospital pins
-        layers = []
+               # Map: user + hospitals (robust version)
+        map_points = []
+
+        # User point
         if user_ll:
-            user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
-            layers.append(pdk.Layer("ScatterplotLayer", user_df,
-                                    get_position="[lon, lat]", get_radius=80,
-                                    get_fill_color=[255,255,255,220], pickable=False))
-        hosp_rows = []
+            map_points.append(
+                {
+                    "name": "You",
+                    "lat": float(user_ll[0]),
+                    "lon": float(user_ll[1]),
+                    "color": [255, 255, 255, 220],
+                    "size": 90,
+                }
+            )
+
+        # Hospital points
         for n in nearest_list:
-            if n["lat"] and n["lng"]:
-                hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
-        if hosp_rows:
-            hosp_df = pd.DataFrame(hosp_rows)
-            layers.append(pdk.Layer("ScatterplotLayer", hosp_df,
-                                    get_position="[lon, lat]", get_radius=70,
-                                    get_fill_color=[255,0,0,220], pickable=True))
-        if layers:
-            center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
-            view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
-            st.pydeck_chart(pdk.Deck(map_style=None, initial_view_state=view_state, layers=layers), use_container_width=True)
-    else:
-        st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
+            lat = n.get("lat")
+            lng = n.get("lng")
+            if lat is None or lng is None:
+                continue
+            map_points.append(
+                {
+                    "name": n["ui_name"],
+                    "lat": float(lat),
+                    "lon": float(lng),
+                    "color": [255, 0, 0, 220],
+                    "size": 70,
+                }
+            )
+
+        if map_points:
+            map_df = pd.DataFrame(map_points)
+
+            # Safe center (average to avoid index issues)
+            view_state = pdk.ViewState(
+                latitude=map_df["lat"].mean(),
+                longitude=map_df["lon"].mean(),
+                zoom=12,
+                pitch=0,
+            )
+
+            layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=map_df,
+                get_position="[lon, lat]",   # lon first, then lat
+                get_radius="size",
+                get_fill_color="color",
+                pickable=True,
+            )
+
+            deck = pdk.Deck(
+                layers=[layer],
+                initial_view_state=view_state,
+                map_style=None,              # no Mapbox token needed
+                tooltip={"text": "{name}"},
+            )
+
+            st.pydeck_chart(deck, use_container_width=True)
+        else:
+            st.info("Could not build map — no valid coordinates returned for user or hospitals.")
+
 
     # ---------- Email ----------
     beds_pred = icu_pred = 0
