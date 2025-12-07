@@ -171,26 +171,26 @@ AREA_COORDS = {
 # Accurate hospital coords (verified, adjust if you have better sources)
 HOSPITAL_COORDS = {
     # Govt. / public hospitals
-    "Dhaka Medical College Hospital": (23.72618, 90.39728),
-    "SSMC & Mitford Hospital": (23.71102, 90.40166),
-    "Bangladesh Shishu Hospital & Institute": (23.77320, 90.36890),
-    "Shaheed Suhrawardy Medical College hospital": (23.76922, 90.37135),
-    "Bangabandhu Shiekh Mujib Medical University": (23.73891, 90.39477),
-    "Police Hospital, Rajarbagh": (23.73680, 90.41820),
-    "Mugda Medical College": (23.73240, 90.43020),
+    "Dhaka Medical College Hospital": (23.725865885937207, 90.39783967885519),
+    "SSMC & Mitford Hospital": (23.71137349529065, 90.40125069659067),
+    "Bangladesh Shishu Hospital & Institute": (23.773126848436895, 90.3693143389208),
+    "Shaheed Suhrawardy Medical College hospital": (23.76930651006599, 90.37186852303486),
+    "Bangabandhu Shiekh Mujib Medical University": (23.73855837950882, 90.39531275241278),
+    "Police Hospital, Rajarbagh": (23.73630847364858, 90.41680617902898),
+    "Mugda Medical College": (23.73215776709393, 90.43018455426262),
 
     # Private / autonomous hospitals
-    "Bangladesh Medical College Hospital": (23.76210, 90.36600),
-    "Holy Family Red Cresent Hospital": (23.75430, 90.40370),
-    "BIRDEM Hospital": (23.73833, 90.39633),
-    "Ibn Sina Hospital": (23.75153, 90.36898),
-    "Square Hospital": (23.74880, 90.38210),
-    "Samorita Hospital": (23.75263, 90.38519),
-    "Central Hospital Dhanmondi": (23.74343, 90.38408),
-    "Lab Aid Hospital": (23.74199, 90.38304),
-    "Green Life Medical Hospital": (23.74614, 90.38549),
-    "Sirajul Islam Medical College Hospital": (23.74738, 90.41055),
-    "Ad-Din Medical College Hospital": (23.74885, 90.40524),
+    "Bangladesh Medical College Hospital": (23.750339257477545, 90.37016391933447),
+    "Holy Family Red Cresent Hospital": (23.74684918571945, 90.40352542118431),
+    "BIRDEM Hospital": (23.739173226045086, 90.39648719844133),
+    "Ibn Sina Hospital": (23.751879360701682, 90.36996899241068),
+    "Square Hospital": (23.75307945874673, 90.38158125426315),
+    "Samorita Hospital": (23.752762379026336, 90.38548890399163),
+    "Central Hospital Dhanmondi": (23.743664079413573, 90.38380330268443),
+    "Lab Aid Hospital": (23.74232937410489, 90.38296181008431),
+    "Green Life Medical Hospital": (23.746722870256157, 90.38636319604855),
+    "Sirajul Islam Medical College Hospital": (23.747449205470968, 90.41032472357733),
+    "Ad-Din Medical College Hospital": (23.748572105855185, 90.4054805812488),
 }
 
 def geocode_area(area_name: str):
