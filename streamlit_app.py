@@ -832,54 +832,27 @@ if submit:
         st.dataframe(df_near, use_container_width=True)
 
         # Map: white user pin + red hospital pins
-               # Map: white user pin + red hospital pins (pydeck)
         layers = []
         if user_ll:
-            user_df = pd.DataFrame([{"name": "You", "lat": user_ll[0], "lon": user_ll[1]}])
-            layers.append(
-                pdk.Layer(
-                    "ScatterplotLayer",
-                    user_df,
-                    get_position="[lon, lat]",
-                    get_radius=80,
-                    radius_units="meters",
-                    get_fill_color=[255, 255, 255, 220],
-                    pickable=False,
-                )
-            )
+            user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
+            layers.append(pdk.Layer("ScatterplotLayer", user_df,
+                                    get_position="[lon, lat]", get_radius=80,
+                                    get_fill_color=[255,255,255,220], pickable=False))
         hosp_rows = []
         for n in nearest_list:
-            if n.get("lat") and n.get("lng"):
+            if n["lat"] and n["lng"]:
                 hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
         if hosp_rows:
             hosp_df = pd.DataFrame(hosp_rows)
-            layers.append(
-                pdk.Layer(
-                    "ScatterplotLayer",
-                    hosp_df,
-                    get_position="[lon, lat]",
-                    get_radius=70,
-                    radius_units="meters",
-                    get_fill_color=[255, 0, 0, 220],
-                    pickable=True,
-                )
-            )
-
+            layers.append(pdk.Layer("ScatterplotLayer", hosp_df,
+                                    get_position="[lon, lat]", get_radius=70,
+                                    get_fill_color=[255,0,0,220], pickable=True))
         if layers:
-            # Correct center assignment (unpack the tuple properly)
-            if user_ll:
-                center_lat, center_lon = user_ll[0], user_ll[1]
-            else:
-                center_lat, center_lon = hosp_rows[0]["lat"], hosp_rows[0]["lon"]
-
+            center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
             view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
-
-            # map_style: if you have a Mapbox token in st.secrets['mapbox_token'] you can use a Mapbox style.
-            # Otherwise None is acceptable; pydeck will attempt default providers.
-            map_style = st.secrets.get("mapbox_token") and "mapbox://styles/mapbox/light-v9" or None
-
-            deck = pdk.Deck(map_style=map_style, initial_view_state=view_state, layers=layers)
-            st.pydeck_chart(deck, use_container_width=True)
+            st.pydeck_chart(pdk.Deck(map_style=None, initial_view_state=view_state, layers=layers), use_container_width=True)
+    else:
+        st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
 
     # ---------- Email ----------
     beds_pred = icu_pred = 0
