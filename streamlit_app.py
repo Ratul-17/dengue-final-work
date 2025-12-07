@@ -170,24 +170,27 @@ AREA_COORDS = {
 
 # Accurate hospital coords (verified, adjust if you have better sources)
 HOSPITAL_COORDS = {
-    "Dhaka Medical College Hospital": (23.7276, 90.3970),
-    "SSMC & Mitford Hospital": (23.7085, 90.4056),
-    "Bangladesh Shishu Hospital & Institute": (23.7742, 90.3687),
-    "Shaheed Suhrawardy Medical College hospital": (23.7749, 90.3655),
-    "Bangabandhu Shiekh Mujib Medical University": (23.7385, 90.3947),
-    "Police Hospital, Rajarbagh": (23.7398, 90.4141),
-    "Mugda Medical College": (23.7346, 90.4301),
-    "Bangladesh Medical College Hospital": (23.7621, 90.3660),
-    "Holy Family Red Cresent Hospital": (23.7543, 90.4037),
-    "BIRDEM Hospital": (23.7381, 90.3959),
-    "Ibn Sina Hospital": (23.7619, 90.3588),
-    "Square Hospital": (23.7488, 90.3821),
-    "Samorita Hospital": (23.7586, 90.3811),
-    "Central Hospital Dhanmondi": (23.7468, 90.3804),
-    "Lab Aid Hospital": (23.7469, 90.3757),
-    "Green Life Medical Hospital": (23.7389, 90.3822),
-    "Sirajul Islam Medical College Hospital": (23.7406, 90.4219),
-    "Ad-Din Medical College Hospital": (23.7278, 90.4187),
+    # Govt. / public hospitals
+    "Dhaka Medical College Hospital": (23.72618, 90.39728),
+    "SSMC & Mitford Hospital": (23.71102, 90.40166),
+    "Bangladesh Shishu Hospital & Institute": (23.77320, 90.36890),
+    "Shaheed Suhrawardy Medical College hospital": (23.76922, 90.37135),
+    "Bangabandhu Shiekh Mujib Medical University": (23.73891, 90.39477),
+    "Police Hospital, Rajarbagh": (23.73680, 90.41820),
+    "Mugda Medical College": (23.73240, 90.43020),
+
+    # Private / autonomous hospitals
+    "Bangladesh Medical College Hospital": (23.76210, 90.36600),
+    "Holy Family Red Cresent Hospital": (23.75430, 90.40370),
+    "BIRDEM Hospital": (23.73833, 90.39633),
+    "Ibn Sina Hospital": (23.75153, 90.36898),
+    "Square Hospital": (23.74880, 90.38210),
+    "Samorita Hospital": (23.75263, 90.38519),
+    "Central Hospital Dhanmondi": (23.74343, 90.38408),
+    "Lab Aid Hospital": (23.74199, 90.38304),
+    "Green Life Medical Hospital": (23.74614, 90.38549),
+    "Sirajul Islam Medical College Hospital": (23.74738, 90.41055),
+    "Ad-Din Medical College Hospital": (23.74885, 90.40524),
 }
 
 def geocode_area(area_name: str):
