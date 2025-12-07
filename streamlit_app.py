@@ -494,6 +494,7 @@ DM_TO_AV, UI_TO_DM, UI_TO_AV = build_name_maps(availability, dist_mat, HOSPITALS
 if "reservations" not in st.session_state: st.session_state["reservations"] = {}
 if "served" not in st.session_state: st.session_state["served"] = {}
 if "reroute_log" not in st.session_state: st.session_state["reroute_log"] = []
+if "allocation_result" not in st.session_state: st.session_state["allocation_result"] = None
 
 def get_remaining(hospital: str, date, bed_type: str) -> int:
     base = 0.0
@@ -564,6 +565,79 @@ def served_df_for_month(month_str: str) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("Served", ascending=False).reset_index(drop=True)
 
 # -------------------------
+# Rendering helper (keeps result + map persistent)
+# -------------------------
+def render_allocation(result):
+    if not result:
+        return
+
+    s_score = result["s_score"]
+    severity = result["severity"]
+    resource = result["resource"]
+    note = result["note"]
+    hospital_ui = result["hospital_ui"]
+    assigned_av = result["assigned_av"]
+    rerouted_distance = result["rerouted_distance"]
+    debug_checks = result["debug_checks"]
+    date_input = result["date_input"]
+    chosen_loc = result["chosen_loc"]
+    nearest_list = result["nearest_list"]
+    user_ll = result["user_ll"]
+    use_driving_eta = result["use_driving_eta"]
+    beds_pred = result["beds_pred"]
+    icu_pred = result["icu_pred"]
+    age = result["age"]
+
+    # Result UI
+    st.subheader("Allocation Result")
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown(f'<div class="kpi">{s_score}</div><div class="kpi-label">Severity Score</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="margin-top:8px">{severity}</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="card" style="margin-top:12px">', unsafe_allow_html=True)
+    st.write(f"**Hospital Tried:** {hospital_ui}")
+    st.write(f"**Assigned Hospital:** {assigned_av if assigned_av else '—'}")
+    st.write(f"**Note:** {note}")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Nearest by user location (using stored nearest_list + user_ll)
+    st.markdown("### 🗺️ Nearest hospitals with vacancy (by your location)")
+    if chosen_loc and nearest_list:
+        df_near = pd.DataFrame([{
+            "Hospital": n["ui_name"],
+            "Vacancy (Beds/ICU)": n["remaining"],
+            "Distance (km)": round(n["distance_km"], 1),
+            "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") else None),
+        } for n in nearest_list])
+        st.dataframe(df_near, use_container_width=True)
+
+        # Map (folium preferred)
+        if FOLIUM_AVAILABLE and user_ll is not None:
+            m = folium.Map(location=[user_ll[0], user_ll[1]], zoom_start=13, tiles="CartoDB dark_matter")
+            folium.CircleMarker(location=[user_ll[0], user_ll[1]], radius=8, color="white", fill=True, fill_color="white", tooltip="You (selected location)").add_to(m)
+            for n in nearest_list:
+                folium.CircleMarker(location=[n["lat"], n["lng"]], radius=7, color="red", fill=True, fill_color="red",
+                                    tooltip=f"{n['ui_name']} — {n['remaining']} free").add_to(m)
+            # stable key so map doesn't vanish on rerun
+            st_folium(m, use_container_width=True, height=480, key="nearest_hospitals_map")
+        elif not FOLIUM_AVAILABLE:
+            st.write("Map requires `streamlit-folium`; install it for map display.")
+    else:
+        st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
+
+    # debug drawer
+    with st.expander("🧪 Debug: Nearest Hospitals Checked"):
+        if debug_checks:
+            dbg = pd.DataFrame(debug_checks)
+            if assigned_av:
+                dbg["Allocated"] = dbg["Neighbor Hospital"].eq(assigned_av)
+                dbg = dbg.sort_values(["Allocated","Remaining Beds/ICU"], ascending=[False,False])
+            st.dataframe(dbg, use_container_width=True)
+        else:
+            st.write("No neighbor checks — assigned at selected hospital or none needed.")
+
+# -------------------------
 # Patient Intake UI
 # -------------------------
 all_dates = sorted(list(set([d for _, d in availability.index])))
@@ -599,12 +673,12 @@ with st.form("allocation_form"):
 # -------------------------
 # Allocation action
 # -------------------------
-assigned_av = None
-rerouted_distance = None
-note = ""
-debug_checks = []
-
 if submit:
+    assigned_av = None
+    rerouted_distance = None
+    note = ""
+    debug_checks = []
+
     _, s_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
     severity = verdict_from_score(s_score)
     resource = required_resource(severity)
@@ -627,20 +701,7 @@ if submit:
         if assigned_av != (start_av or hospital_ui):
             log_reroute(hospital_ui, assigned_av, date_input)
 
-    # Result UI
-    st.subheader("Allocation Result")
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown(f'<div class="kpi">{s_score}</div><div class="kpi-label">Severity Score</div>', unsafe_allow_html=True)
-    st.markdown(f'<div style="margin-top:8px">{severity}</div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="card" style="margin-top:12px">', unsafe_allow_html=True)
-    st.write(f"**Hospital Tried:** {hospital_ui}")
-    st.write(f"**Assigned Hospital:** {assigned_av if assigned_av else '—'}")
-    st.write(f"**Note:** {note}")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # Nearest by user location
+    # Nearest by user location (compute once; store in session_state)
     chosen_loc = user_location_query.strip() if user_location_query.strip() else (pick_area if pick_area != "—" else "")
     nearest_list = []
     user_ll = None
@@ -675,31 +736,7 @@ if submit:
         except Exception as e:
             st.warning(f"Could not fetch nearest hospitals: {e}")
 
-    st.markdown("### 🗺️ Nearest hospitals with vacancy (by your location)")
-    if chosen_loc and nearest_list:
-        df_near = pd.DataFrame([{
-            "Hospital": n["ui_name"],
-            "Vacancy (Beds/ICU)": n["remaining"],
-            "Distance (km)": round(n["distance_km"], 1),
-            "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") else None),
-        } for n in nearest_list])
-        st.dataframe(df_near, use_container_width=True)
-
-        # Map (folium preferred)
-        if FOLIUM_AVAILABLE:
-            m = folium.Map(location=[user_ll[0], user_ll[1]], zoom_start=13, tiles="CartoDB dark_matter")
-            folium.CircleMarker(location=[user_ll[0], user_ll[1]], radius=8, color="white", fill=True, fill_color="white", tooltip="You (selected location)").add_to(m)
-            for n in nearest_list:
-                folium.CircleMarker(location=[n["lat"], n["lng"]], radius=7, color="red", fill=True, fill_color="red",
-                                    tooltip=f"{n['ui_name']} — {n['remaining']} free").add_to(m)
-            # UPDATED: keep map stable (no disappearing) by using use_container_width + a fixed key
-            st_folium(m, use_container_width=True, height=480, key="nearest_hospitals_map")
-        else:
-            st.write("Map requires `streamlit-folium`; install it for map display.")
-    else:
-        st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
-
-    # Email sending
+    # Email sending (side-effect only on submit, not on rerun)
     beds_pred = icu_pred = 0
     if assigned_av:
         assigned_counts = get_avail_counts(assigned_av, date_input)
@@ -722,16 +759,28 @@ if submit:
         if res["sent_fail"]:
             st.warning(f"Some emails failed: {res['sent_fail']}")
 
-    # debug drawer
-    with st.expander("🧪 Debug: Nearest Hospitals Checked"):
-        if debug_checks:
-            dbg = pd.DataFrame(debug_checks)
-            if assigned_av:
-                dbg["Allocated"] = dbg["Neighbor Hospital"].eq(assigned_av)
-                dbg = dbg.sort_values(["Allocated","Remaining Beds/ICU"], ascending=[False,False])
-            st.dataframe(dbg, use_container_width=True)
-        else:
-            st.write("No neighbor checks — assigned at selected hospital or none needed.")
+    # Store everything needed to re-render report + map on future reruns
+    st.session_state["allocation_result"] = {
+        "s_score": s_score,
+        "severity": severity,
+        "resource": resource,
+        "note": note,
+        "hospital_ui": hospital_ui,
+        "assigned_av": assigned_av,
+        "rerouted_distance": rerouted_distance,
+        "debug_checks": debug_checks,
+        "date_input": date_input,
+        "chosen_loc": chosen_loc,
+        "nearest_list": nearest_list,
+        "user_ll": user_ll,
+        "use_driving_eta": use_driving_eta,
+        "beds_pred": beds_pred,
+        "icu_pred": icu_pred,
+        "age": age,
+    }
+
+# Always render latest allocation result (if any), so it doesn't vanish
+render_allocation(st.session_state.get("allocation_result"))
 
 # -------------------------
 # Management Dashboard
