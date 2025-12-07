@@ -510,107 +510,68 @@ def send_email_multi(recipients, subject, html_body):
 # ===============================
 # Load repo files
 # ===============================
+# ===============================
+# Load repo files (robust + uploader fallback)
+# ===============================
 pred_file_path = Path("Predicted dataset AIO.xlsx")
 loc_file_path  = Path("Location matrix.xlsx")
-if not pred_file_path.exists() or not loc_file_path.exists():
-    st.error("Required files not found in repo folder: 'Predicted dataset AIO.xlsx' and 'Location matrix.xlsx'")
-    st.stop()
 
-df_pred_raw = ensure_df(pd.read_excel(pred_file_path))
-df_loc       = ensure_df(pd.read_excel(loc_file_path))
-
-# ===============================
-# Sidebar – Time resolution
-# ===============================
-st.sidebar.header("⏱️ Time Resolution")
-granularity = st.sidebar.selectbox("Time granularity", ["Daily","Weekly","Monthly"], index=0)
-interp_method = st.sidebar.selectbox("Interpolation (when expanding)", ["linear","ffill"], index=0)
-
-# ===============================
-# Build availability with expansion
-# ===============================
-def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
-                                        granularity: str,
-                                        interp_method: str) -> pd.DataFrame:
-    df = df_pred_raw.copy()
-    hospital_col = autodetect(df, ["hospital","hospital name"])
-    if not hospital_col: raise ValueError("Couldn't detect hospital column in predictions.")
-    df["_Hospital"] = df[hospital_col].astype(str).str.strip()
-
-    date_col  = autodetect(df, ["date"])
-    year_col  = autodetect(df, ["year"])
-    month_col = autodetect(df, ["month"])
-    day_col   = autodetect(df, ["day"])
-
-    if date_col:
-        df["_Date"] = pd.to_datetime(df[date_col], errors="coerce")
-    elif year_col and month_col:
-        if day_col:
-            df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
+# Helper to read excel from path or uploaded file
+def read_excel_from_source(src):
+    try:
+        if isinstance(src, (str, Path)):
+            return ensure_df(pd.read_excel(src))
         else:
-            # fixed the earlier typo: astype(str) instead of astype[str]
-            df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" +
-                                           df[month_col].astype(int).astype(str) + "-01", errors="coerce")
-    else:
-        raise ValueError("Provide either a Date column or (Year & Month) in predictions.")
-    df = df.dropna(subset=["_Date"]); df["_Date"] = df["_Date"].dt.normalize()
+            # uploaded file (streamlit UploadedFile)
+            return ensure_df(pd.read_excel(src))
+    except Exception as ex:
+        st.error(f"Failed to read Excel: {ex}")
+        return None
 
-    pred_normal_avail_col = autodetect(df, ["predicted normal beds available","normal beds available (pred)","beds available predicted","pred beds"])
-    pred_icu_avail_col    = autodetect(df, ["predicted icu beds available","icu beds available (pred)","icu available predicted","pred icu"])
-    beds_total_col  = autodetect(df, ["beds total","total beds"])
-    icu_total_col   = autodetect(df, ["icu beds total","total icu"])
-    beds_occ_col    = autodetect(df, ["beds occupied","occupied beds"])
-    icu_occ_col     = autodetect(df, ["icu beds occupied","occupied icu"])
+# Try repo files first
+df_pred_raw = None
+df_loc = None
+if pred_file_path.exists() and loc_file_path.exists():
+    df_pred_raw = read_excel_from_source(pred_file_path)
+    df_loc = read_excel_from_source(loc_file_path)
+else:
+    st.warning("Required Excel files not found in repository root.")
+    st.info("Please upload the two files or push them to your repo root with the exact filenames:\n"
+            "`Predicted dataset AIO.xlsx` and `Location matrix.xlsx`")
+    up1 = st.file_uploader("Upload Predicted dataset AIO.xlsx", type=["xls","xlsx"], key="uploader_pred")
+    up2 = st.file_uploader("Upload Location matrix.xlsx", type=["xls","xlsx"], key="uploader_loc")
+    if up1:
+        df_pred_raw = read_excel_from_source(up1)
+    if up2:
+        df_loc = read_excel_from_source(up2)
 
-    if pred_normal_avail_col and pred_icu_avail_col:
-        df["_BedsAvail"] = pd.to_numeric(df[pred_normal_avail_col], errors="coerce")
-        df["_ICUAvail"]  = pd.to_numeric(df[pred_icu_avail_col], errors="coerce")
-    elif all([beds_total_col, beds_occ_col, icu_total_col, icu_occ_col]):
-        df["_BedsAvail"] = pd.to_numeric(df[beds_total_col], errors="coerce") - pd.to_numeric(df[beds_occ_col], errors="coerce")
-        df["_ICUAvail"]  = pd.to_numeric(df[icu_total_col],  errors="coerce") - pd.to_numeric(df[icu_occ_col],  errors="coerce")
-    else:
-        raise ValueError("Could not find predicted availability columns or totals/occupied fallback.")
-    df["_BedsAvail"] = df["_BedsAvail"].fillna(0); df["_ICUAvail"] = df["_ICUAvail"].fillna(0)
+# If still missing, provide a small sample fallback so the UI doesn't go blank (so you can test)
+if df_pred_raw is None or df_loc is None:
+    st.warning("Using minimal sample fallback data to keep app running (not real hospital data).")
+    # small sample prediction dataset with columns the loader expects
+    sample_pred = pd.DataFrame({
+        "Hospital": ["Dhaka Medical College Hospital", "Mugda Medical College"],
+        "Date": [pd.Timestamp.today().normalize(), pd.Timestamp.today().normalize()],
+        "Predicted Normal Beds Available": [10, 5],
+        "Predicted ICU Beds Available": [1, 0]
+    })
+    # sample location matrix format:
+    sample_loc = pd.DataFrame({
+        "Location": ["Dhaka Medical College Hospital", "Mugda Medical College"],
+        "Dhaka Medical College Hospital": [0, 6.0],
+        "Mugda Medical College": [6.0, 0],
+    })
+    if df_pred_raw is None:
+        df_pred_raw = ensure_df(sample_pred)
+    if df_loc is None:
+        df_loc = ensure_df(sample_loc)
 
-    if granularity == "Monthly":
-        df["_Month"] = df["_Date"].dt.to_period("M").dt.to_timestamp()
-        grouped = (df.groupby(["_Hospital","_Month"], as_index=False)[["_BedsAvail","_ICUAvail"]].mean())
-        availability = (grouped.set_index(["_Hospital","_Month"]).sort_index())
-        availability.index = availability.index.set_names(["_Hospital","_Date"])
-        return availability
-
-    # Expand to Daily, then weekly if needed
-    df_ts = df.set_index("_Date")
-    beds_piv = df_ts.pivot_table(index="_Date", columns="_Hospital", values="_BedsAvail", aggfunc="mean")
-    icu_piv  = df_ts.pivot_table(index="_Date", columns="_Hospital", values="_ICUAvail",  aggfunc="mean")
-    full_idx = pd.date_range(start=beds_piv.index.min(), end=beds_piv.index.max(), freq="D")
-    beds_piv = beds_piv.reindex(full_idx); icu_piv = icu_piv.reindex(full_idx)
-
-    if interp_method == "linear":
-        beds_piv = beds_piv.interpolate(method="time", limit_direction="both")
-        icu_piv  = icu_piv.interpolate(method="time", limit_direction="both")
-    else:
-        beds_piv = beds_piv.ffill().bfill(); icu_piv = icu_piv.ffill().bfill()
-
-    if granularity == "Weekly":
-        beds_piv = beds_piv.resample("W-MON").mean()
-        icu_piv  = icu_piv.resample("W-MON").mean()
-
-    beds_long = beds_piv.stack(dropna=False).rename("_BedsAvail").to_frame()
-    icu_long  = icu_piv.stack(dropna=False).rename("_ICUAvail").to_frame()
-    long_df = beds_long.join(icu_long, how="outer").reset_index()
-    long_df.columns = ["_Date","_Hospital","_BedsAvail","_ICUAvail"]
-    long_df["_BedsAvail"] = long_df["_BedsAvail"].fillna(0).clip(lower=0)
-    long_df["_ICUAvail"]  = long_df["_ICUAvail"].fillna(0).clip(lower=0)
-    availability = (long_df.groupby(["_Hospital","_Date"], as_index=False)[["_BedsAvail","_ICUAvail"]]
-                    .mean().set_index(["_Hospital","_Date"]).sort_index())
-    return availability
-
-try:
-    availability = build_availability_from_predictions(df_pred_raw, granularity, interp_method)
-except Exception as e:
-    st.error(f"Error building availability: {e}")
+# Final validation
+if df_pred_raw is None or df_loc is None:
+    st.error("Unable to load or create required data. Check uploaded files or repository files and refresh.")
     st.stop()
+
+# Now df_pred_raw and df_loc are guaranteed to be DataFrames (or app stopped above).
 
 # ===============================
 # Distance matrix + name maps
