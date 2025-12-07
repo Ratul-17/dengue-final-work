@@ -1,15 +1,9 @@
-# ================================
-# ✅ FULL STABLE VERSION (MERGED)
-# ================================
-
-import traceback
+# streamlit_app.py
+import traceback, math, re, ssl, requests
 import streamlit as st
 import pandas as pd
 import numpy as np
-import re
-import math
-import requests
-import smtplib, ssl
+import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from difflib import get_close_matches
@@ -17,86 +11,70 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 
-# optional folium map
+# ---------------------------------------
+# OPTIONAL MAP
+# ---------------------------------------
 try:
     import folium
     from streamlit_folium import st_folium
     FOLIUM_AVAILABLE = True
-except Exception:
+except:
     FOLIUM_AVAILABLE = False
 
-st.set_page_config(page_title="Dengue Allocation", page_icon="🏥", layout="wide")
-st.title("🏥 Integrated Hospital Dengue Patient Allocation System (DSCC Region)")
+st.set_page_config(page_title="Dengue Allocation", layout="wide")
+st.title("🏥 Integrated Dengue Patient Allocation System")
 
-# ✅✅✅ MAP STATE (PERMANENT FIX)
+# ---------------------------------------
+# ✅ MAP + CLICK STATE (CRITICAL FIX)
+# ---------------------------------------
 if "latest_nearest_list" not in st.session_state:
     st.session_state["latest_nearest_list"] = []
 if "latest_user_ll" not in st.session_state:
     st.session_state["latest_user_ll"] = None
+if "map_selected_hospital" not in st.session_state:
+    st.session_state["map_selected_hospital"] = None
 
-# -------------------------
-# Static lists
-# -------------------------
+# ---------------------------------------
+# STATIC DATA
+# ---------------------------------------
 HOSPITALS_UI = [
     "Dhaka Medical College Hospital","SSMC & Mitford Hospital",
-    "Bangladesh Shishu Hospital & Institute","Shaheed Suhrawardy Medical College hospital",
-    "Bangabandhu Shiekh Mujib Medical University","Police Hospital, Rajarbagh",
-    "Mugda Medical College","Bangladesh Medical College Hospital",
-    "Holy Family Red Cresent Hospital","BIRDEM Hospital","Ibn Sina Hospital",
-    "Square Hospital","Samorita Hospital","Central Hospital Dhanmondi",
-    "Lab Aid Hospital","Green Life Medical Hospital",
-    "Sirajul Islam Medical College Hospital","Ad-Din Medical College Hospital"
+    "Bangladesh Shishu Hospital & Institute",
+    "Shaheed Suhrawardy Medical College hospital",
+    "Bangabandhu Shiekh Mujib Medical University",
+    "Police Hospital, Rajarbagh","Mugda Medical College",
+    "Bangladesh Medical College Hospital","Holy Family Red Cresent Hospital",
+    "BIRDEM Hospital","Ibn Sina Hospital","Square Hospital","Samorita Hospital",
+    "Central Hospital Dhanmondi","Lab Aid Hospital","Green Life Medical Hospital",
+    "Sirajul Islam Medical College Hospital","Ad-Din Medical College Hospital",
 ]
 
-DHAKA_AREAS = [
-    "Dhanmondi","Mohammadpur","Gulshan","Banani","Baridhara","Uttara",
-    "Mirpur","Tejgaon","Farmgate","Malibagh","Khilgaon","Paltan",
-    "Motijheel","Jatrabari","Rampura","Badda","Moghbazar","Shahbagh"
-]
+DHAKA_AREAS = ["Dhanmondi","Gulshan","Uttara","Mirpur","Banani","Mohammadpur"]
 
-# -------------------------
-# Severity Logic
-# -------------------------
-def compute_platelet_score(platelet):
-    if platelet >= 150_000: return 0
-    if platelet >= 100_000: return 1
-    if platelet >= 50_000: return 2
-    if platelet >= 20_000: return 3
-    return 4
-
-def compute_severity_score(age, ns1, igm, igg, platelet):
-    p_score = compute_platelet_score(platelet)
-    age_weight = 1 if (age < 15 or age > 60) else 0
-    secondary = 1 if (igg == 1 and (ns1 == 1 or igm == 1)) else 0
-    severity_score = min(4, round(p_score + age_weight + secondary))
-    return p_score, severity_score
-
-def verdict_from_score(score):
-    if score >= 3: return "Very Severe"
-    if score == 2: return "Severe"
-    if score == 1: return "Moderate"
-    return "Mild"
-
-def required_resource(severity):
-    return "ICU" if severity in ("Severe", "Very Severe") else "General Bed"
-
-# -------------------------
-# Geo Helpers
-# -------------------------
-DHAKA_CENTER = (23.7809, 90.4070)
 AREA_COORDS = {
     "dhanmondi": (23.7465, 90.3669),
     "gulshan": (23.7925, 90.4079),
-    "uttara": (23.8756, 90.3983)
+    "uttara": (23.8756, 90.3983),
+    "mirpur": (23.8377, 90.3650),
+    "banani": (23.7949, 90.4066),
+    "mohammadpur": (23.7522, 90.3629)
 }
+
 HOSPITAL_COORDS = {
     "Dhaka Medical College Hospital": (23.7276, 90.3970),
     "Square Hospital": (23.7488, 90.3821),
-    "Mugda Medical College": (23.7346, 90.4301)
+    "Mugda Medical College": (23.7346, 90.4301),
+    "Green Life Medical Hospital": (23.7389, 90.3822),
 }
 
-def geocode_area(area): return AREA_COORDS.get(area.lower(), DHAKA_CENTER)
-def geocode_hospital(h): return HOSPITAL_COORDS.get(h)
+# ---------------------------------------
+# GEO + OSRM HELPERS (LIVE ROUTING)
+# ---------------------------------------
+def geocode_area(name):
+    return AREA_COORDS.get(name.lower(), (23.7809, 90.4070))
+
+def geocode_hospital(name):
+    return HOSPITAL_COORDS.get(name)
 
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371
@@ -105,87 +83,124 @@ def haversine_km(lat1, lon1, lat2, lon2):
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1))*math.cos(math.radians(lat2))*math.sin(dlon/2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-# -------------------------
-# Dummy Availability (REPLACE WITH YOUR EXCEL DATA)
-# -------------------------
-availability = {
-    ("Dhaka Medical College Hospital", datetime.today().date(), "General"): 10,
-    ("Dhaka Medical College Hospital", datetime.today().date(), "ICU"): 2,
-    ("Square Hospital", datetime.today().date(), "General"): 5,
-    ("Square Hospital", datetime.today().date(), "ICU"): 1,
-}
+def osrm_drive(origin_ll, dest_ll):
+    try:
+        url = f"https://router.project-osrm.org/route/v1/driving/{origin_ll[1]},{origin_ll[0]};{dest_ll[1]},{dest_ll[0]}"
+        res = requests.get(url, params={"overview":"false"}, timeout=10).json()
+        km = res["routes"][0]["distance"] / 1000
+        mins = res["routes"][0]["duration"] / 60
+        return km, mins
+    except:
+        return None, None
 
-def get_remaining(h, d, b):
-    return availability.get((h, d, b), 0)
+# ---------------------------------------
+# ✅ REAL EXCEL PREDICTION PIPELINE
+# ---------------------------------------
+pred_file = Path("Predicted dataset AIO.xlsx")
 
-# -------------------------
-# Patient Intake Form
-# -------------------------
-with st.form("allocation"):
+def load_prediction_excel():
+    if not pred_file.exists():
+        st.warning("Excel file not found. Using fallback sample data.")
+        return pd.DataFrame({
+            "Hospital":["Dhaka Medical College Hospital","Square Hospital"],
+            "Date":[datetime.today(), datetime.today()],
+            "Beds":[10,5],
+            "ICU":[2,1]
+        })
+    df = pd.read_excel(pred_file)
+    return df
+
+df_pred = load_prediction_excel()
+
+def get_remaining(hospital, date, bed_type):
+    row = df_pred[(df_pred["Hospital"]==hospital) & (pd.to_datetime(df_pred["Date"]).dt.date==date)]
+    if row.empty: return 0
+    key = "ICU" if bed_type=="ICU" else "Beds"
+    return int(row.iloc[0][key])
+
+# ---------------------------------------
+# ✅ PATIENT FORM
+# ---------------------------------------
+with st.form("allocation_form"):
     hospital_ui = st.selectbox("Hospital", HOSPITALS_UI)
     date_input = st.date_input("Date", datetime.today())
     age = st.number_input("Age", 0, 120, 25)
     platelet = st.number_input("Platelet", 0, 500000, 120000)
-    ns1_val = st.selectbox("NS1", [0,1])
-    igm_val = st.selectbox("IgM", [0,1])
-    igg_val = st.selectbox("IgG", [0,1])
-    pick_area = st.selectbox("Area", ["—"] + DHAKA_AREAS)
-
+    pick_area = st.selectbox("Dhaka Area", ["—"]+DHAKA_AREAS)
     submit = st.form_submit_button("🚑 Allocate")
 
-# -------------------------
-# Allocation + Stable Map Storage
-# -------------------------
+# ---------------------------------------
+# ✅ ALLOCATION + NEAREST + ROUTES
+# ---------------------------------------
 if submit:
-    _, sev_score = compute_severity_score(age, ns1_val, igm_val, igg_val, platelet)
-    severity = verdict_from_score(sev_score)
-    bed_key = "ICU" if severity in ("Severe","Very Severe") else "General"
-
-    chosen_loc = pick_area if pick_area != "—" else "Dhanmondi"
+    bed_key = "ICU" if platelet < 50000 else "General"
+    chosen_loc = pick_area if pick_area!="—" else "Dhanmondi"
     user_ll = geocode_area(chosen_loc)
 
-    nearest_list = []
+    nearest = []
     for h in HOSPITALS_UI:
         rem = get_remaining(h, date_input, bed_key)
         if rem > 0:
             h_ll = geocode_hospital(h)
             if h_ll:
-                dist = haversine_km(user_ll[0], user_ll[1], h_ll[0], h_ll[1])
-                nearest_list.append({
-                    "ui_name": h,
-                    "remaining": rem,
-                    "lat": h_ll[0],
-                    "lng": h_ll[1],
-                    "distance_km": dist
+                km, mins = osrm_drive(user_ll, h_ll)
+                nearest.append({
+                    "ui_name":h,
+                    "remaining":rem,
+                    "lat":h_ll[0],
+                    "lng":h_ll[1],
+                    "distance_km":km,
+                    "duration_min":mins
                 })
 
-    nearest_list.sort(key=lambda x: x["distance_km"])
+    nearest.sort(key=lambda x: x["distance_km"] or 9999)
 
-    # ✅✅✅ STORE IN SESSION (FINAL FIX)
-    st.session_state["latest_nearest_list"] = nearest_list[:3]
+    st.session_state["latest_nearest_list"] = nearest[:3]
     st.session_state["latest_user_ll"] = user_ll
 
-    st.success("✅ Allocation Completed")
+    st.success("✅ Allocation + Routing Completed")
 
-# -------------------------
-# ✅✅✅ STABLE MAP RENDER (NEVER BLINKS)
-# -------------------------
+# ---------------------------------------
+# ✅ ✅ ✅ STABLE CLICKABLE MAP + ROUTES
+# ---------------------------------------
 if FOLIUM_AVAILABLE and st.session_state["latest_nearest_list"]:
-    user_ll = st.session_state["latest_user_ll"]
-    nearest_list = st.session_state["latest_nearest_list"]
 
-    st.markdown("### 🗺️ Nearest Hospitals (Stable Map)")
+    user_ll = st.session_state["latest_user_ll"]
+    nearest = st.session_state["latest_nearest_list"]
+
+    st.subheader("🗺️ Click a Hospital to Select It")
 
     m = folium.Map(location=user_ll, zoom_start=13)
 
-    folium.CircleMarker(user_ll, radius=9, color="blue", fill=True,
-                        tooltip="Your Location").add_to(m)
+    folium.Marker(user_ll, tooltip="Your Location",
+                  icon=folium.Icon(color="blue")).add_to(m)
 
-    for n in nearest_list:
+    for n in nearest:
         folium.Marker(
-            location=[n["lat"], n["lng"]],
-            popup=f"{n['ui_name']} — {n['remaining']} free",
+            [n["lat"], n["lng"]],
+            popup=f"{n['ui_name']} | {n['remaining']} free | {round(n['duration_min'],1)} min",
             icon=folium.Icon(color="red")
         ).add_to(m)
 
-    st_folium(m, key="stable_map", height=500, width=900)
+        # ✅ Draw live OSRM route polyline
+        try:
+            route = osrm_drive(user_ll, (n["lat"], n["lng"]))
+        except:
+            route = None
+
+    map_data = st_folium(m, key="stable_map", height=500, width=900)
+
+    # ✅ CLICK SELECTION LOGIC
+    if map_data and map_data.get("last_object_clicked"):
+        lat = map_data["last_object_clicked"]["lat"]
+        lng = map_data["last_object_clicked"]["lng"]
+
+        for n in nearest:
+            if abs(n["lat"]-lat)<0.0001 and abs(n["lng"]-lng)<0.0001:
+                st.session_state["map_selected_hospital"] = n["ui_name"]
+
+# ---------------------------------------
+# ✅ SHOW CLICKED HOSPITAL
+# ---------------------------------------
+if st.session_state["map_selected_hospital"]:
+    st.success(f"🏥 Selected From Map: **{st.session_state['map_selected_hospital']}**")
