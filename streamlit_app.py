@@ -792,51 +792,113 @@ if submit:
 
     st.progress(sev_percent(severity))
 
-    # ---------- Nearest by user location ----------
-    chosen_loc = user_location_query.strip() if user_location_query.strip() else (pick_area if pick_area != "—" else "")
-    nearest_list = []
-    user_ll = None
-    if chosen_loc:
-        try:
-            bed_key_needed = "ICU" if resource == "ICU" else "Normal"
-            nearest_list, user_ll = nearest_available_by_user_location_no_key(
-                chosen_loc, date_input, bed_key_needed, top_k=3, prefer_driving_eta=use_driving_eta
-            )
-        except Exception as e:
-            st.warning(f"Could not fetch nearest hospitals: {e}")
+  # ---------- Nearest by user location ----------
+chosen_loc = user_location_query.strip() if user_location_query.strip() else (pick_area if pick_area != "—" else "")
+nearest_list = []
+user_ll = None
+geocode_errors = []
 
-    st.markdown("### 🗺️ Nearest hospitals with vacancy (by your location)")
-    if chosen_loc and nearest_list:
-        df_near = pd.DataFrame([{
-            "Hospital": n["ui_name"],
-            "Vacancy (Beds/ICU)": n["remaining"],
-            "Distance (km)": round(n["distance_km"], 1),
-            "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") is not None else None),
-        } for n in nearest_list])
-        st.dataframe(df_near, use_container_width=True)
+if chosen_loc:
+    try:
+        bed_key_needed = "ICU" if resource == "ICU" else "Normal"
+        nearest_list, user_ll = nearest_available_by_user_location_no_key(
+            chosen_loc, date_input, bed_key_needed, top_k=3, prefer_driving_eta=use_driving_eta
+        )
+    except Exception as e:
+        geocode_errors.append(str(e))
 
-        # Map: white user pin + red hospital pins
-        layers = []
-        if user_ll:
+st.markdown("### 🗺️ Nearest hospitals with vacancy (by your location)")
+
+# If we have results, show table + map
+if chosen_loc and nearest_list:
+    df_near = pd.DataFrame([{
+        "Hospital": n["ui_name"],
+        "Vacancy (Beds/ICU)": n["remaining"],
+        "Distance (km)": round(n["distance_km"], 1),
+        "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") is not None else None),
+    } for n in nearest_list])
+    st.dataframe(df_near, use_container_width=True)
+
+    # Map: white user pin + red hospital pins
+    layers = []
+    if user_ll:
+        user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", user_df,
+            get_position="[lon, lat]", get_radius=80,
+            get_fill_color=[255,255,255,220], pickable=False
+        ))
+
+    hosp_rows = []
+    for n in nearest_list:
+        if n.get("lat") is not None and n.get("lng") is not None:
+            hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
+
+    if hosp_rows:
+        hosp_df = pd.DataFrame(hosp_rows)
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", hosp_df,
+            get_position="[lon, lat]", get_radius=70,
+            get_fill_color=[255,0,0,220], pickable=True
+        ))
+
+    # Safe center: user_ll if available, else first hospital
+    if layers:
+        center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
+        view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
+        # use open-street-map style so pydeck doesn't require a Mapbox token
+        st.pydeck_chart(pdk.Deck(map_style="open-street-map", initial_view_state=view_state, layers=layers), use_container_width=True)
+    else:
+        st.info("No valid coordinates found to render the map (missing hospital coordinates).")
+
+# If user typed location but no nearest_list found, attempt graceful fallback:
+elif chosen_loc and not nearest_list:
+    # If we managed to geocode the user, show their pin and then try geocoding all hospitals to show nearest vacancies
+    if user_ll:
+        st.info("No nearby vacancies within the Dhaka search bounds, showing your location and nearby hospitals (fallback).")
+        # geocode hospitals (cached) and compute simple distances
+        hosp_geo = []
+        for ui_name in HOSPITALS_UI:
+            try:
+                ll = geocode_hospital(ui_name)
+                if ll:
+                    rem = get_remaining(UI_TO_AV.get(ui_name) or ui_name, date_input, "ICU" if resource=="ICU" else "Normal")
+                    hosp_geo.append({"ui_name": ui_name, "lat": ll[0], "lon": ll[1], "remaining": rem})
+            except Exception as e:
+                geocode_errors.append(f"{ui_name}: {e}")
+        # sort by straight-line distance and take top 6 for map
+        for h in hosp_geo:
+            h["distance_km"] = haversine_km(user_ll[0], user_ll[1], h["lat"], h["lon"])
+        hosp_geo_sorted = sorted(hosp_geo, key=lambda x: x["distance_km"])[:6]
+
+        # show small table
+        if hosp_geo_sorted:
+            st.dataframe(pd.DataFrame([{"Hospital":h["ui_name"], "Vacancy (Beds/ICU)":h["remaining"], "Distance (km)": round(h["distance_km"],1)} for h in hosp_geo_sorted]), use_container_width=True)
+            layers = []
             user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
             layers.append(pdk.Layer("ScatterplotLayer", user_df,
                                     get_position="[lon, lat]", get_radius=80,
                                     get_fill_color=[255,255,255,220], pickable=False))
-        hosp_rows = []
-        for n in nearest_list:
-            if n.get("lat") and n.get("lng"):
-                hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
-        if hosp_rows:
-            hosp_df = pd.DataFrame(hosp_rows)
+            hosp_df = pd.DataFrame([{"name":h["ui_name"], "lat":h["lat"], "lon":h["lon"]} for h in hosp_geo_sorted])
             layers.append(pdk.Layer("ScatterplotLayer", hosp_df,
                                     get_position="[lon, lat]", get_radius=70,
                                     get_fill_color=[255,0,0,220], pickable=True))
-        if layers:
-            center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
-            view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
-            st.pydeck_chart(pdk.Deck(map_style=None, initial_view_state=view_state, layers=layers), use_container_width=True)
+            view_state = pdk.ViewState(latitude=user_ll[0], longitude=user_ll[1], zoom=12, pitch=0)
+            st.pydeck_chart(pdk.Deck(map_style="open-street-map", initial_view_state=view_state, layers=layers), use_container_width=True)
+        else:
+            st.warning("Could not geocode hospitals for fallback mapping. See Debug for details.")
     else:
-        st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
+        # user geocode failed entirely
+        st.warning("Could not locate the entered place. Please try a different area name (e.g., 'Dhanmondi') or type a more specific address.")
+        if geocode_errors:
+            st.markdown("**Debug hints:**")
+            for e in geocode_errors[:5]:
+                st.text(e)
+
+else:
+    # no chosen location provided
+    st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
+
 
     # ---------- Email ----------
     beds_pred = icu_pred = 0
