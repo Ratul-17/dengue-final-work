@@ -45,7 +45,7 @@ HOSPITALS_UI = [
     "Ad-Din Medical College Hospital",
 ]
 
-# Common Dhaka areas (extend any time)
+# Common Dhaka areas (extend anytime)
 DHAKA_AREAS = [
     "Dhanmondi","Mohammadpur","Gulshan","Banani","Baridhara","Uttara","Mirpur","Kafrul","Pallabi",
     "Tejgaon","Farmgate","Kawran Bazar","Panthapath","Kalabagan","New Market","Science Lab",
@@ -59,7 +59,105 @@ DHAKA_AREAS = [
 ]
 
 # ===============================
-# THEME-AWARE Styles (auto light/dark)
+# OFFLINE COORDINATES (Dhaka areas & hospitals)
+# ===============================
+# Area coords: lat, lon (approx)
+AREA_COORDS = {
+    "Dhanmondi": (23.7461, 90.3675),
+    "Mohammadpur": (23.7645, 90.3580),
+    "Gulshan": (23.7925, 90.4078),
+    "Banani": (23.7936, 90.4043),
+    "Baridhara": (23.8103, 90.4240),
+    "Uttara": (23.8740, 90.4000),
+    "Mirpur": (23.8041, 90.3667),
+    "Kafrul": (23.7922, 90.3800),
+    "Pallabi": (23.8240, 90.3650),
+    "Tejgaon": (23.7630, 90.4000),
+    "Farmgate": (23.7520, 90.3945),
+    "Kawran Bazar": (23.7516, 90.3925),
+    "Kalabagan": (23.7446, 90.3804),
+    "New Market": (23.7356, 90.3856),
+    "Science Lab": (23.7389, 90.3836),
+    "Elephant Road": (23.7380, 90.3880),
+    "Lalmatia": (23.7480, 90.3624),
+    "Shyamoli": (23.7760, 90.3580),
+    "Agargaon": (23.7780, 90.3810),
+    "Sher-e-Bangla Nagar": (23.7760, 90.3795),
+    "Kallyanpur": (23.7790, 90.3600),
+    "Gabtoli": (23.7800, 90.3310),
+    "Hazaribagh": (23.7290, 90.3680),
+    "Rayer Bazar": (23.7380, 90.3600),
+    "Jhigatola": (23.7370, 90.3690),
+    "Azimpur": (23.7260, 90.3800),
+    "Lalbagh": (23.7180, 90.3880),
+    "Chankharpul": (23.7270, 90.3950),
+    "Shahbagh": (23.7387, 90.3959),
+    "Paltan": (23.7363, 90.4100),
+    "Motijheel": (23.7336, 90.4141),
+    "Dilkusha": (23.7330, 90.4170),
+    "Wari": (23.7200, 90.4150),
+    "Sutrapur": (23.7130, 90.4150),
+    "Kotwali": (23.7080, 90.4030),
+    "Bangshal": (23.7120, 90.4000),
+    "Chawkbazar": (23.7180, 90.3940),
+    "Sadarghat": (23.7090, 90.4020),
+    "Narinda": (23.7210, 90.4160),
+    "Ramna": (23.7380, 90.4070),
+    "Eskaton": (23.7380, 90.4030),
+    "Moghbazar": (23.7490, 90.4070),
+    "Mouchak": (23.7495, 90.4125),
+    "Malibagh": (23.7490, 90.4150),
+    "Rampura": (23.7630, 90.4240),
+    "Banasree": (23.7500, 90.4270),
+    "Aftabnagar": (23.7640, 90.4360),
+    "Badda": (23.7800, 90.4260),
+    "Khilgaon": (23.7440, 90.4300),
+    "Basabo": (23.7350, 90.4330),
+    "Shantinagar": (23.7380, 90.4140),
+    "Kakrail": (23.7385, 90.4120),
+    "Khilkhet": (23.8310, 90.4220),
+    "Nikunja": (23.8330, 90.4200),
+    "Airport": (23.8510, 90.4050),
+    "Cantonment": (23.8040, 90.3890),
+    "Mohakhali": (23.7780, 90.4000),
+    "Banani DOHS": (23.8100, 90.4050),
+    "Baridhara DOHS": (23.8200, 90.4210),
+    "Bashundhara R/A": (23.8150, 90.4500),
+    "Notun Bazar": (23.8100, 90.4300),
+    "Jatrabari": (23.7100, 90.4300),
+    "Demra": (23.7150, 90.4800),
+    "Keraniganj": (23.7000, 90.3300),
+    "Kamalapur": (23.7260, 90.4310),
+    "Sayedabad": (23.7150, 90.4250),
+    "Tikatuli": (23.7300, 90.4150),
+    "Arambagh": (23.7350, 90.4150),
+    "Paribagh": (23.7410, 90.3935)
+}
+
+# Hospital coords: lat, lon
+HOSPITAL_COORDS = {
+    "Dhaka Medical College Hospital": (23.7289, 90.3935),
+    "SSMC & Mitford Hospital": (23.7067, 90.4075),
+    "Bangladesh Shishu Hospital & Institute": (23.7765, 90.3655),
+    "Shaheed Suhrawardy Medical College hospital": (23.7740, 90.3529),
+    "Bangabandhu Shiekh Mujib Medical University": (23.7380, 90.3958),
+    "Police Hospital, Rajarbagh": (23.7464, 90.4162),
+    "Mugda Medical College": (23.7280, 90.4340),
+    "Bangladesh Medical College Hospital": (23.7385, 90.3720),
+    "Holy Family Red Cresent Hospital": (23.7400, 90.4020),
+    "BIRDEM Hospital": (23.7395, 90.3975),
+    "Ibn Sina Hospital": (23.7465, 90.3748),
+    "Square Hospital": (23.7481, 90.3845),
+    "Samorita Hospital": (23.7565, 90.3840),
+    "Central Hospital Dhanmondi": (23.7425, 90.3760),
+    "Lab Aid Hospital": (23.7460, 90.3765),
+    "Green Life Medical Hospital": (23.7460, 90.3820),
+    "Sirajul Islam Medical College Hospital": (23.7735, 90.3650),
+    "Ad-Din Medical College Hospital": (23.7160, 90.4230)
+}
+
+# ===============================
+# Styles (theme aware)
 # ===============================
 st.markdown("""
 <style>
@@ -200,7 +298,7 @@ def required_resource(severity: str) -> str:
     return "ICU" if severity in ("Severe", "Very Severe") else "General Bed"
 
 # ===============================
-# Geocoding & distances
+# Geocoding & distances (offline-first)
 # ===============================
 DHAKA_VIEWBOX = (90.30, 23.69, 90.50, 23.90)  # lon_min, lat_min, lon_max, lat_max
 
@@ -219,6 +317,9 @@ def _with_bd_context(q: str) -> str:
 
 @lru_cache(maxsize=512)
 def geocode_nominatim(query: str):
+    """
+    Online Nominatim lookup (fallback). May fail if outbound requests blocked.
+    """
     q = _with_bd_context(query)
     url = "https://nominatim.openstreetmap.org/search"
     headers = {"User-Agent": f"dscc-dengue-allocator/1.1 ({_contact_email_for_user_agent()})"}
@@ -261,34 +362,54 @@ def osrm_drive(origin_ll, dest_ll):
     except Exception:
         return None
 
-HOSPITAL_PLACES = {
-    "Dhaka Medical College Hospital": "Dhaka Medical College Hospital, Dhaka, Bangladesh",
-    "SSMC & Mitford Hospital": "SSMC & Mitford Hospital, Dhaka, Bangladesh",
-    "Bangladesh Shishu Hospital & Institute": "Bangladesh Shishu Hospital & Institute, Dhaka, Bangladesh",
-    "Shaheed Suhrawardy Medical College hospital": "Shaheed Suhrawardy Medical College Hospital, Dhaka, Bangladesh",
-    "Bangabandhu Shiekh Mujib Medical University": "BSMMU, Dhaka, Bangladesh",
-    "Police Hospital, Rajarbagh": "Police Hospital, Rajarbagh, Dhaka, Bangladesh",
-    "Mugda Medical College": "Mugda Medical College Hospital, Dhaka, Bangladesh",
-    "Bangladesh Medical College Hospital": "Bangladesh Medical College Hospital, Dhaka, Bangladesh",
-    "Holy Family Red Cresent Hospital": "Holy Family Red Crescent Medical College, Dhaka, Bangladesh",
-    "BIRDEM Hospital": "BIRDEM General Hospital, Dhaka, Bangladesh",
-    "Ibn Sina Hospital": "Ibn Sina Hospital Dhanmondi, Dhaka, Bangladesh",
-    "Square Hospital": "Square Hospital, Dhaka, Bangladesh",
-    "Samorita Hospital": "Samorita Hospital, Dhaka, Bangladesh",
-    "Central Hospital Dhanmondi": "Central Hospital, Dhanmondi, Dhaka, Bangladesh",
-    "Lab Aid Hospital": "Labaid Hospital, Dhaka, Bangladesh",
-    "Green Life Medical Hospital": "Green Life Medical College Hospital, Dhaka, Bangladesh",
-    "Sirajul Islam Medical College Hospital": "Sirajul Islam Medical College & Hospital, Dhaka, Bangladesh",
-    "Ad-Din Medical College Hospital": "Ad-Din Medical College Hospital, Dhaka, Bangladesh",
-}
+def geocode_user_location(query: str):
+    """
+    Offline-first user geocoder:
+      1) exact area in AREA_COORDS
+      2) fuzzy match to area name contained in query
+      3) hospital name exact match
+      4) fallback to Nominatim (may fail)
+    Returns (lat, lon) or None.
+    """
+    if not query or not str(query).strip():
+        return None
+    q = str(query).strip()
+
+    # exact area match (case-insensitive)
+    for area, ll in AREA_COORDS.items():
+        if q.lower() == area.lower():
+            return ll
+
+    # fuzzy: area substring
+    for area, ll in AREA_COORDS.items():
+        if area.lower() in q.lower():
+            return ll
+
+    # hospital exact match:
+    for h, ll in HOSPITAL_COORDS.items():
+        if q.lower() == h.lower():
+            return ll
+
+    # fallback: try nominatim (may fail)
+    return geocode_nominatim(q)
 
 @lru_cache(maxsize=256)
 def geocode_hospital(ui_name: str):
-    q1 = HOSPITAL_PLACES.get(ui_name, f"{ui_name}, Dhaka, Bangladesh")
-    ll = geocode_nominatim(q1)
-    if ll: return ll
-    cleaned = re.sub(r"hospital|medical|college|&|,"," ", ui_name, flags=re.I).strip()
-    return geocode_nominatim(cleaned)
+    """
+    Offline-first hospital geocode.
+    """
+    if not ui_name:
+        return None
+    # try offline table
+    if ui_name in HOSPITAL_COORDS:
+        return HOSPITAL_COORDS[ui_name]
+    # try lookup by normalized keys
+    for hname, ll in HOSPITAL_COORDS.items():
+        if norm_key(hname) == norm_key(ui_name):
+            return ll
+    # fallback to Nominatim
+    q1 = ui_name + ", Dhaka, Bangladesh"
+    return geocode_nominatim(q1)
 
 # ===============================
 # Helper: hospitals available and nearest
@@ -308,7 +429,7 @@ def nearest_available_by_user_location_no_key(user_query: str, date_any, bed_key
     Returns (list, user_ll). Each item: {ui_name, av_name, remaining, distance_km, duration_min, lat, lng}
     Dhaka/BD bias + sanity filter: drop >80 km.
     """
-    user_ll = geocode_nominatim(user_query)
+    user_ll = geocode_user_location(user_query)
     if not user_ll:
         return [], None
 
@@ -324,7 +445,6 @@ def nearest_available_by_user_location_no_key(user_query: str, date_any, bed_key
             osrm = osrm_drive(user_ll, h_ll)
             if osrm:
                 dist_km, dur_min = osrm
-        # sanity filter
         if dist_km > 80:
             continue
         enriched.append({
@@ -487,7 +607,6 @@ def build_availability_from_predictions(df_pred_raw: pd.DataFrame,
         if day_col:
             df["_Date"] = pd.to_datetime(dict(year=df[year_col], month=df[month_col], day=df[day_col]), errors="coerce")
         else:
-            # corrected bug: use .astype(str) not astype[str]
             df["_Date"] = pd.to_datetime(df[year_col].astype(int).astype(str) + "-" +
                                        df[month_col].astype(int).astype(str) + "-01", errors="coerce")
     else:
@@ -566,7 +685,6 @@ if "served" not in st.session_state:
     st.session_state["served"] = {}
 if "reroute_log" not in st.session_state:
     st.session_state["reroute_log"] = []
-# NEW: allocation_log to store events (for SS-style log)
 if "allocation_log" not in st.session_state:
     st.session_state["allocation_log"] = []
 
@@ -703,7 +821,7 @@ if submit:
         if assigned_av != (start_av or hospital_ui):
             log_reroute(hospital_ui, assigned_av, date_input)
 
-    # store allocation log entry (for SS-like logging)
+    # store allocation log entry (for SS-style log)
     assigned_counts = {"beds_available": None, "icu_available": None}
     if assigned_av:
         assigned_counts = get_avail_counts(assigned_av, date_input)
@@ -792,113 +910,98 @@ if submit:
 
     st.progress(sev_percent(severity))
 
-  # ---------- Nearest by user location ----------
-chosen_loc = user_location_query.strip() if user_location_query.strip() else (pick_area if pick_area != "—" else "")
-nearest_list = []
-user_ll = None
-geocode_errors = []
+    # ---------- Nearest by user location ----------
+    chosen_loc = user_location_query.strip() if user_location_query.strip() else (pick_area if pick_area != "—" else "")
+    nearest_list = []
+    user_ll = None
+    geocode_errors = []
 
-if chosen_loc:
-    try:
-        bed_key_needed = "ICU" if resource == "ICU" else "Normal"
-        nearest_list, user_ll = nearest_available_by_user_location_no_key(
-            chosen_loc, date_input, bed_key_needed, top_k=3, prefer_driving_eta=use_driving_eta
-        )
-    except Exception as e:
-        geocode_errors.append(str(e))
+    if chosen_loc:
+        try:
+            bed_key_needed = "ICU" if resource == "ICU" else "Normal"
+            nearest_list, user_ll = nearest_available_by_user_location_no_key(
+                chosen_loc, date_input, bed_key_needed, top_k=3, prefer_driving_eta=use_driving_eta
+            )
+        except Exception as e:
+            geocode_errors.append(str(e))
 
-st.markdown("### 🗺️ Nearest hospitals with vacancy (by your location)")
+    st.markdown("### 🗺️ Nearest hospitals with vacancy (by your location)")
 
-# If we have results, show table + map
-if chosen_loc and nearest_list:
-    df_near = pd.DataFrame([{
-        "Hospital": n["ui_name"],
-        "Vacancy (Beds/ICU)": n["remaining"],
-        "Distance (km)": round(n["distance_km"], 1),
-        "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") is not None else None),
-    } for n in nearest_list])
-    st.dataframe(df_near, use_container_width=True)
+    # If we have results, show table + map
+    if chosen_loc and nearest_list:
+        df_near = pd.DataFrame([{
+            "Hospital": n["ui_name"],
+            "Vacancy (Beds/ICU)": n["remaining"],
+            "Distance (km)": round(n["distance_km"], 1),
+            "ETA (min)": (int(round(n["duration_min"])) if n.get("duration_min") is not None else None),
+        } for n in nearest_list])
+        st.dataframe(df_near, use_container_width=True)
 
-    # Map: white user pin + red hospital pins
-    layers = []
-    if user_ll:
-        user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
-        layers.append(pdk.Layer(
-            "ScatterplotLayer", user_df,
-            get_position="[lon, lat]", get_radius=80,
-            get_fill_color=[255,255,255,220], pickable=False
-        ))
-
-    hosp_rows = []
-    for n in nearest_list:
-        if n.get("lat") is not None and n.get("lng") is not None:
-            hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
-
-    if hosp_rows:
-        hosp_df = pd.DataFrame(hosp_rows)
-        layers.append(pdk.Layer(
-            "ScatterplotLayer", hosp_df,
-            get_position="[lon, lat]", get_radius=70,
-            get_fill_color=[255,0,0,220], pickable=True
-        ))
-
-    # Safe center: user_ll if available, else first hospital
-    if layers:
-        center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
-        view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
-        # use open-street-map style so pydeck doesn't require a Mapbox token
-        st.pydeck_chart(pdk.Deck(map_style="open-street-map", initial_view_state=view_state, layers=layers), use_container_width=True)
-    else:
-        st.info("No valid coordinates found to render the map (missing hospital coordinates).")
-
-# If user typed location but no nearest_list found, attempt graceful fallback:
-elif chosen_loc and not nearest_list:
-    # If we managed to geocode the user, show their pin and then try geocoding all hospitals to show nearest vacancies
-    if user_ll:
-        st.info("No nearby vacancies within the Dhaka search bounds, showing your location and nearby hospitals (fallback).")
-        # geocode hospitals (cached) and compute simple distances
-        hosp_geo = []
-        for ui_name in HOSPITALS_UI:
-            try:
-                ll = geocode_hospital(ui_name)
-                if ll:
-                    rem = get_remaining(UI_TO_AV.get(ui_name) or ui_name, date_input, "ICU" if resource=="ICU" else "Normal")
-                    hosp_geo.append({"ui_name": ui_name, "lat": ll[0], "lon": ll[1], "remaining": rem})
-            except Exception as e:
-                geocode_errors.append(f"{ui_name}: {e}")
-        # sort by straight-line distance and take top 6 for map
-        for h in hosp_geo:
-            h["distance_km"] = haversine_km(user_ll[0], user_ll[1], h["lat"], h["lon"])
-        hosp_geo_sorted = sorted(hosp_geo, key=lambda x: x["distance_km"])[:6]
-
-        # show small table
-        if hosp_geo_sorted:
-            st.dataframe(pd.DataFrame([{"Hospital":h["ui_name"], "Vacancy (Beds/ICU)":h["remaining"], "Distance (km)": round(h["distance_km"],1)} for h in hosp_geo_sorted]), use_container_width=True)
-            layers = []
+        # Map: white user pin + red hospital pins
+        layers = []
+        if user_ll:
             user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
             layers.append(pdk.Layer("ScatterplotLayer", user_df,
                                     get_position="[lon, lat]", get_radius=80,
                                     get_fill_color=[255,255,255,220], pickable=False))
-            hosp_df = pd.DataFrame([{"name":h["ui_name"], "lat":h["lat"], "lon":h["lon"]} for h in hosp_geo_sorted])
+
+        hosp_rows = []
+        for n in nearest_list:
+            if n.get("lat") is not None and n.get("lng") is not None:
+                hosp_rows.append({"name": n["ui_name"], "lat": n["lat"], "lon": n["lng"]})
+        if hosp_rows:
+            hosp_df = pd.DataFrame(hosp_rows)
             layers.append(pdk.Layer("ScatterplotLayer", hosp_df,
                                     get_position="[lon, lat]", get_radius=70,
                                     get_fill_color=[255,0,0,220], pickable=True))
-            view_state = pdk.ViewState(latitude=user_ll[0], longitude=user_ll[1], zoom=12, pitch=0)
+        # Safe center:
+        if layers:
+            center_lat, center_lon = (user_ll if user_ll else (hosp_rows[0]["lat"], hosp_rows[0]["lon"]))
+            view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=12, pitch=0)
             st.pydeck_chart(pdk.Deck(map_style="open-street-map", initial_view_state=view_state, layers=layers), use_container_width=True)
         else:
-            st.warning("Could not geocode hospitals for fallback mapping. See Debug for details.")
+            st.info("No valid coordinates found to render the map (missing hospital coordinates).")
+
+    # fallback when chosen_loc but no vacancy list
+    elif chosen_loc and not nearest_list:
+        if user_ll:
+            st.info("No nearby vacancies within Dhaka search bounds. Showing your location and nearby hospitals (fallback).")
+            hosp_geo = []
+            for ui_name in HOSPITALS_UI:
+                try:
+                    ll = geocode_hospital(ui_name)
+                    if ll:
+                        rem = get_remaining(UI_TO_AV.get(ui_name) or ui_name, date_input, "ICU" if resource=="ICU" else "Normal")
+                        hosp_geo.append({"ui_name": ui_name, "lat": ll[0], "lon": ll[1], "remaining": rem})
+                except Exception as e:
+                    geocode_errors.append(f"{ui_name}: {e}")
+            # compute distances
+            for h in hosp_geo:
+                h["distance_km"] = haversine_km(user_ll[0], user_ll[1], h["lat"], h["lon"])
+            hosp_geo_sorted = sorted(hosp_geo, key=lambda x: x["distance_km"])[:6]
+            if hosp_geo_sorted:
+                st.dataframe(pd.DataFrame([{"Hospital":h["ui_name"], "Vacancy (Beds/ICU)":h["remaining"], "Distance (km)": round(h["distance_km"],1)} for h in hosp_geo_sorted]), use_container_width=True)
+                layers = []
+                user_df = pd.DataFrame([{"name":"You","lat":user_ll[0],"lon":user_ll[1]}])
+                layers.append(pdk.Layer("ScatterplotLayer", user_df,
+                                        get_position="[lon, lat]", get_radius=80,
+                                        get_fill_color=[255,255,255,220], pickable=False))
+                hosp_df = pd.DataFrame([{"name":h["ui_name"], "lat":h["lat"], "lon":h["lon"]} for h in hosp_geo_sorted])
+                layers.append(pdk.Layer("ScatterplotLayer", hosp_df,
+                                        get_position="[lon, lat]", get_radius=70,
+                                        get_fill_color=[255,0,0,220], pickable=True))
+                view_state = pdk.ViewState(latitude=user_ll[0], longitude=user_ll[1], zoom=12, pitch=0)
+                st.pydeck_chart(pdk.Deck(map_style="open-street-map", initial_view_state=view_state, layers=layers), use_container_width=True)
+            else:
+                st.warning("Could not geocode hospitals for fallback mapping. See Debug for details.")
+        else:
+            st.warning("Could not locate the entered place. Please try a different area name (e.g., 'Dhanmondi') or type a more specific address.")
+            if geocode_errors:
+                st.markdown("**Debug hints:**")
+                for e in geocode_errors[:5]:
+                    st.text(e)
     else:
-        # user geocode failed entirely
-        st.warning("Could not locate the entered place. Please try a different area name (e.g., 'Dhanmondi') or type a more specific address.")
-        if geocode_errors:
-            st.markdown("**Debug hints:**")
-            for e in geocode_errors[:5]:
-                st.text(e)
-
-else:
-    # no chosen location provided
-    st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
-
+        st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
 
     # ---------- Email ----------
     beds_pred = icu_pred = 0
