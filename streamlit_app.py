@@ -832,68 +832,37 @@ if submit:
         st.dataframe(df_near, use_container_width=True)
 
         # Map: white user pin + red hospital pins
-               # Map: user + nearest hospitals with free Carto/OSM basemap (no API key)
-        map_points = []
+              # Simple Streamlit map (free, no API key) using st.map
+        map_rows = []
 
-        # User point
+        # User location (bigger dot)
         if user_ll:
-            map_points.append(
-                {
-                    "name": "You",
-                    "lat": float(user_ll[0]),
-                    "lon": float(user_ll[1]),
-                    "color": [255, 255, 255, 220],
-                    "size": 90,
-                }
-            )
+            map_rows.append({
+                "lat": float(user_ll[0]),
+                "lon": float(user_ll[1]),
+                "size": 80,          # larger marker
+            })
 
-        # Hospital points
+        # Hospital locations (smaller dots)
         for n in nearest_list:
             lat = n.get("lat")
             lng = n.get("lng")
             if lat is None or lng is None:
                 continue
-            map_points.append(
-                {
-                    "name": n["ui_name"],
-                    "lat": float(lat),
-                    "lon": float(lng),
-                    "color": [255, 0, 0, 220],
-                    "size": 70,
-                }
-            )
+            map_rows.append({
+                "lat": float(lat),
+                "lon": float(lng),
+                "size": 40,          # smaller marker
+            })
 
-        if map_points:
-            map_df = pd.DataFrame(map_points)
-
-            # Center map on average of all points (safe even if only user or only hospitals)
-            view_state = pdk.ViewState(
-                latitude=map_df["lat"].mean(),
-                longitude=map_df["lon"].mean(),
-                zoom=12,
-                pitch=0,
-            )
-
-            layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=map_df,
-                get_position="[lon, lat]",
-                get_radius="size",
-                get_fill_color="color",
-                pickable=True,
-            )
-
-            deck = pdk.Deck(
-                layers=[layer],
-                initial_view_state=view_state,
-                # Free basemap: Carto/OSM style, no token required
-                map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-                tooltip={"text": "{name}"},
-            )
-
-            st.pydeck_chart(deck, use_container_width=True)
+        if map_rows:
+            map_df = pd.DataFrame(map_rows)
+            # Streamlit will automatically choose a free basemap provider
+            st.map(map_df, size="size", use_container_width=True)
         else:
-            st.info("Could not build map — no valid coordinates returned for user or hospitals.")
+            st.info("Coordinates for user / hospitals are not available, so map could not be drawn.")
+    else:
+        st.info("Enter a Dhaka area (pick or type) to see nearest hospitals with vacancy.")
 
     # ---------- Email ----------
     beds_pred = icu_pred = 0
